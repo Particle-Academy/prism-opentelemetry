@@ -1,0 +1,47 @@
+{
+    "name": "particle-academy/prism-opentelemetry",
+    "description": "OpenTelemetry bridge for Prism: turns Prism telemetry events into GenAI-convention spans for Arize Phoenix and any OTLP backend.",
+    "keywords": ["prism", "opentelemetry", "otel", "otlp", "observability", "tracing", "llm", "gen-ai", "phoenix", "laravel"],
+    "homepage": "https://github.com/Particle-Academy/prism-opentelemetry",
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        { "name": "Particle Academy" }
+    ],
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0",
+        "open-telemetry/api": "^1.0",
+        "particle-academy/prism": "dev-feat/telemetry-935"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.14",
+        "open-telemetry/sdk": "^1.0",
+        "orchestra/testbench": "^10|^11",
+        "pestphp/pest": "^3.0|^4.0",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": { "Prism\\OpenTelemetry\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "Prism\\OpenTelemetry\\Tests\\": "tests/" }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true,
+            "tbachert/spi": true
+        },
+        "sort-packages": true
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["Prism\\OpenTelemetry\\PrismOpenTelemetryServiceProvider"]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
