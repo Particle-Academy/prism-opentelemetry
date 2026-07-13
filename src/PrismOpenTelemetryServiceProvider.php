@@ -7,12 +7,25 @@ namespace Prism\OpenTelemetry;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\ServiceProvider;
 use OpenTelemetry\API\Globals;
+use OpenTelemetry\API\Trace\TracerInterface;
 
 class PrismOpenTelemetryServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/prism-opentelemetry.php', 'prism-opentelemetry');
+
+        $this->app->singleton(SpanStore::class);
+
+        $this->app->singleton(TracerInterface::class, fn (): TracerInterface => Globals::tracerProvider()->getTracer(
+            (string) config('prism-opentelemetry.tracer_name', 'prism')
+        ));
+
+        $this->app->singleton(TelemetrySubscriber::class, fn ($app): TelemetrySubscriber => new TelemetrySubscriber(
+            $app->make(TracerInterface::class),
+            $app->make(SpanStore::class),
+            (bool) config('prism-opentelemetry.record_exceptions', true),
+        ));
     }
 
     public function boot(): void
@@ -25,17 +38,11 @@ class PrismOpenTelemetryServiceProvider extends ServiceProvider
             return;
         }
 
-        // The OpenTelemetry API must be present for the bridge to do anything.
+        // The OpenTelemetry API must be installed for the bridge to do anything.
         if (! class_exists(Globals::class)) {
             return;
         }
 
-        // Subscriber is wired in a subsequent commit; guard so the scaffold boots
-        // cleanly on its own.
-        $subscriber = 'Prism\\OpenTelemetry\\TelemetrySubscriber';
-
-        if (class_exists($subscriber)) {
-            $this->app->make(Dispatcher::class)->subscribe($subscriber);
-        }
+        $this->app->make(Dispatcher::class)->subscribe(TelemetrySubscriber::class);
     }
 }
