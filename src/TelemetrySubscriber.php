@@ -112,15 +112,15 @@ class TelemetrySubscriber
         $start = $end - (int) round($event->durationMs * 1_000_000);
 
         $span = $this->tracer
-            ->spanBuilder(GenAiAttributes::OPERATION_EXECUTE_TOOL.' '.$event->toolCall->name)
+            ->spanBuilder(GenAiAttributes::OPERATION_EXECUTE_TOOL.' '.$event->toolName)
             ->setParent($parent)
             ->setSpanKind(SpanKind::KIND_INTERNAL)
             ->setStartTimestamp($start)
             ->startSpan();
 
         $span->setAttribute(GenAiAttributes::OPERATION_NAME, GenAiAttributes::OPERATION_EXECUTE_TOOL);
-        $span->setAttribute(GenAiAttributes::TOOL_NAME, $event->toolCall->name);
-        $span->setAttribute(GenAiAttributes::TOOL_CALL_ID, $event->toolCall->id);
+        $span->setAttribute(GenAiAttributes::TOOL_NAME, $event->toolName);
+        $span->setAttribute(GenAiAttributes::TOOL_CALL_ID, $event->toolCallId);
 
         if ($event->context->toolIndex !== null) {
             $span->setAttribute(GenAiAttributes::TOOL_INDEX, $event->context->toolIndex);

@@ -19,8 +19,6 @@ use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Events\Telemetry\StepCompleted;
 use Prism\Prism\Events\Telemetry\ToolInvoked;
 use Prism\Prism\Telemetry\TelemetryContext;
-use Prism\Prism\ValueObjects\ToolCall;
-use Prism\Prism\ValueObjects\ToolResult;
 use Prism\Prism\ValueObjects\Usage;
 use RuntimeException;
 
@@ -78,12 +76,7 @@ it('nests step and tool spans under the root via trace id', function (): void {
 
     $sub->onGenerationStarted(new GenerationStarted($ctx));
     $sub->onStepCompleted(new StepCompleted($ctx->withStep(0), FinishReason::ToolCalls, new Usage(3, 1)));
-    $sub->onToolInvoked(new ToolInvoked(
-        $ctx->withTool(0),
-        new ToolCall('c1', 'weather', ['city' => 'NYC']),
-        new ToolResult(toolCallId: 'c1', toolName: 'weather', args: ['city' => 'NYC'], result: 'Sunny'),
-        12.5,
-    ));
+    $sub->onToolInvoked(new ToolInvoked($ctx->withTool(0), 'weather', 'c1', 12.5));
     $sub->onGenerationCompleted(new GenerationCompleted($ctx, 40.0, FinishReason::Stop, new Usage(8, 4)));
 
     $spans = collect($exporter->getSpans())->keyBy(fn ($span): string => $span->getName());
@@ -112,12 +105,7 @@ it('gives the tool span a duration derived from durationMs', function (): void {
     $ctx = context('t-dur');
 
     $sub->onGenerationStarted(new GenerationStarted($ctx));
-    $sub->onToolInvoked(new ToolInvoked(
-        $ctx->withTool(0),
-        new ToolCall('c1', 'slow', []),
-        new ToolResult(toolCallId: 'c1', toolName: 'slow', args: [], result: 'ok'),
-        50.0,
-    ));
+    $sub->onToolInvoked(new ToolInvoked($ctx->withTool(0), 'slow', 'c1', 50.0));
     $sub->onGenerationCompleted(new GenerationCompleted($ctx, 60.0));
 
     $tool = collect($exporter->getSpans())->firstWhere(fn ($span): bool => $span->getName() === 'execute_tool slow');
@@ -157,12 +145,7 @@ it('ignores step/tool/completion events for an unknown trace id', function (): v
     $ctx = context('never-started');
 
     $sub->onStepCompleted(new StepCompleted($ctx->withStep(0), null, null));
-    $sub->onToolInvoked(new ToolInvoked(
-        $ctx->withTool(0),
-        new ToolCall('c1', 't', []),
-        new ToolResult(toolCallId: 'c1', toolName: 't', args: [], result: 'x'),
-        1.0,
-    ));
+    $sub->onToolInvoked(new ToolInvoked($ctx->withTool(0), 't', 'c1', 1.0));
     $sub->onGenerationCompleted(new GenerationCompleted($ctx, 1.0));
 
     expect($exporter->getSpans())->toBeEmpty();
