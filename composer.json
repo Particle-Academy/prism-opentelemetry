@@ -14,7 +14,7 @@
         "illuminate/contracts": "^12.0|^13.0",
         "illuminate/support": "^12.0|^13.0",
         "open-telemetry/api": "^1.0",
-        "particle-academy/prism": "dev-feat/telemetry-935"
+        "particle-academy/prism": "^0.111"
     },
     "require-dev": {
         "laravel/pint": "^1.14",

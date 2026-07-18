@@ -25,6 +25,7 @@ class PrismOpenTelemetryServiceProvider extends ServiceProvider
             $app->make(TracerInterface::class),
             $app->make(SpanStore::class),
             (bool) config('prism-opentelemetry.record_exceptions', true),
+            (int) config('prism-opentelemetry.content_max_length', 65_536),
         ));
     }
 
