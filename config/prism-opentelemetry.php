@@ -12,4 +12,9 @@ return [
 
     // Record the thrown exception on the span when a generation fails.
     'record_exceptions' => env('PRISM_OTEL_RECORD_EXCEPTIONS', true),
+
+    // Cap the byte length of any single captured-content span attribute
+    // (prompts, completions, tool args/results) so a hostile or high-volume
+    // opt-in capture cannot bloat a span or the OTLP export. 0 disables the cap.
+    'content_max_length' => (int) env('PRISM_OTEL_CONTENT_MAX_LENGTH', 65_536),
 ];

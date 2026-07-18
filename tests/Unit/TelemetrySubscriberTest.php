@@ -295,3 +295,39 @@ it('maps embedding and image semantic input output without exporting vectors or 
         ->and($imageAttributes->get(OpenInferenceAttributes::OUTPUT_VALUE))->not->toContain('secret-signed-token')
         ->and($imageAttributes->get(OpenInferenceAttributes::OUTPUT_VALUE))->not->toContain('fragment');
 });
+
+it('caps captured content to the configured max length', function (): void {
+    $exporter = new InMemoryExporter;
+    $provider = new TracerProvider(new SimpleSpanProcessor($exporter));
+    $sub = new TelemetrySubscriber($provider->getTracer('test'), new SpanStore, true, maxContentLength: 32);
+
+    $ctx = context('cap');
+    $response = new \stdClass;
+    $response->text = str_repeat('A', 5_000);
+
+    $sub->onGenerationStarted(new GenerationStarted($ctx));
+    $sub->onGenerationCompleted(new GenerationCompleted($ctx, 1.0, FinishReason::Stop, new Usage(1, 1), $response));
+
+    $out = collect($exporter->getSpans())
+        ->firstWhere(fn ($span): bool => $span->getName() === 'chat gpt-4o')
+        ->getAttributes()->get(OpenInferenceAttributes::OUTPUT_VALUE);
+
+    expect($out)->toEndWith('…[truncated]')
+        ->and(strlen((string) $out))->toBeLessThan(60); // 32 bytes + marker, not 5000
+});
+
+it('never throws into the app when captured content has malformed UTF-8', function (): void {
+    [$sub, $exporter] = subscriberHarness();
+    $ctx = context('bad-utf8');
+
+    $response = new \stdClass;
+    $response->structured = ['v' => "\xB1\x31"]; // invalid UTF-8 → json() must not throw
+
+    $sub->onGenerationStarted(new GenerationStarted($ctx));
+    $sub->onGenerationCompleted(new GenerationCompleted($ctx, 1.0, FinishReason::Stop, new Usage(1, 1), $response));
+
+    $root = collect($exporter->getSpans())->firstWhere(fn ($span): bool => $span->getName() === 'chat gpt-4o');
+
+    expect($root)->not->toBeNull()
+        ->and($root->getAttributes()->get(OpenInferenceAttributes::OUTPUT_VALUE))->toBeString();
+});

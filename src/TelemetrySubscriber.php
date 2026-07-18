@@ -36,6 +36,7 @@ class TelemetrySubscriber
         protected TracerInterface $tracer,
         protected SpanStore $store,
         protected bool $recordExceptions = true,
+        protected int $maxContentLength = 65_536,
     ) {}
 
     public function subscribe(Dispatcher $events): void
@@ -253,7 +254,7 @@ class TelemetrySubscriber
         }
 
         if ($tool->result !== null) {
-            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, is_string($tool->result) ? $tool->result : $this->json($tool->result));
+            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, is_string($tool->result) ? $this->bounded($tool->result) : $this->json($tool->result));
             $span->setAttribute(OpenInferenceAttributes::OUTPUT_MIME_TYPE, is_string($tool->result) ? OpenInferenceAttributes::MIME_TEXT : OpenInferenceAttributes::MIME_JSON);
         }
 
@@ -350,7 +351,7 @@ class TelemetrySubscriber
         }
 
         if (property_exists($response, 'text') && is_string($response->text)) {
-            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, $response->text);
+            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, $this->bounded($response->text));
             $span->setAttribute(OpenInferenceAttributes::OUTPUT_MIME_TYPE, OpenInferenceAttributes::MIME_TEXT);
 
             return;
@@ -396,14 +397,15 @@ class TelemetrySubscriber
             }
             $span->setAttribute(OpenInferenceAttributes::INPUT_MESSAGES.'.'.$index.'.message.role', (string) ($message['type'] ?? 'user'));
             $content = $message['content'] ?? $message;
-            $span->setAttribute(OpenInferenceAttributes::INPUT_MESSAGES.'.'.$index.'.message.content', is_string($content) ? $content : $this->json($content));
+            $span->setAttribute(OpenInferenceAttributes::INPUT_MESSAGES.'.'.$index.'.message.content', is_string($content) ? $this->bounded($content) : $this->json($content));
         }
 
         if (array_key_exists('text', $data)) {
-            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, (string) $data['text']);
+            $text = $this->bounded((string) $data['text']);
+            $span->setAttribute(OpenInferenceAttributes::OUTPUT_VALUE, $text);
             $span->setAttribute(OpenInferenceAttributes::OUTPUT_MIME_TYPE, OpenInferenceAttributes::MIME_TEXT);
             $span->setAttribute(OpenInferenceAttributes::OUTPUT_MESSAGES.'.0.message.role', 'assistant');
-            $span->setAttribute(OpenInferenceAttributes::OUTPUT_MESSAGES.'.0.message.content', (string) $data['text']);
+            $span->setAttribute(OpenInferenceAttributes::OUTPUT_MESSAGES.'.0.message.content', $text);
         }
     }
 
@@ -436,7 +438,25 @@ class TelemetrySubscriber
 
     protected function json(mixed $value): string
     {
-        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        // Fail-safe: telemetry must never throw into the app. Substitute bad
+        // UTF-8 and emit partial output instead of aborting the generation.
+        $encoded = json_encode($value, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return $this->bounded(is_string($encoded) ? $encoded : '');
+    }
+
+    /**
+     * Cap a captured-content attribute so a hostile or high-volume payload
+     * cannot bloat a span (and the OTLP export). Mirrors prism's telemetry
+     * `content_max_length`; a non-positive limit disables the cap.
+     */
+    protected function bounded(string $value): string
+    {
+        if ($this->maxContentLength <= 0 || strlen($value) <= $this->maxContentLength) {
+            return $value;
+        }
+
+        return mb_strcut($value, 0, $this->maxContentLength, 'UTF-8').'…[truncated]';
     }
 
     protected function applyFinishReason(SpanInterface $span, ?FinishReason $finishReason): void
