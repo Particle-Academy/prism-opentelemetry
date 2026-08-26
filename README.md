@@ -12,6 +12,11 @@ cost, model, and finish-reason attributes — exported over OTLP to
 > `particle-academy/prism`; this bridge tracks that branch until the events ship
 > in a tagged Prism release.
 
+> **Working on this package?** Read **[`AGENTS.md`](AGENTS.md)** first — the boundary
+> this package has to hold, the gates that must be green, and the traps that have
+> already caught someone.
+> `@link AGENTS.md`
+
 ## How it fits together
 
 ```
