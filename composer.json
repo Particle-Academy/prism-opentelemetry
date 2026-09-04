@@ -37,6 +37,11 @@
         },
         "sort-packages": true
     },
+    "scripts": {
+        "test": "@php vendor/bin/pest",
+        "types": "@php vendor/bin/phpstan analyse",
+        "format": "@php vendor/bin/pint"
+    },
     "extra": {
         "laravel": {
             "providers": ["Prism\\OpenTelemetry\\PrismOpenTelemetryServiceProvider"]
