@@ -51,21 +51,45 @@ The byte cap on captured-content attributes (`0` disables it) is a second bound
 behind the gate, not an alternative to it. Opt-in capture must not be able to
 bloat a span or the OTLP export.
 
-## Known gap in this repo
+## The four gates, and why the whitelist has four entries
 
-**There are no CI workflows and no `composer` script aliases here** — unlike
-every other PHP package in the ecosystem, which run `test` / `types` / `format`
-as four CI jobs.
+This repo now runs the same four CI jobs as every other PHP package here:
+`tests.yml`, `phpstan.yml`, `formatting.yml`, `require-checker.yml`, plus
+`composer test` / `types` / `format`.
 
-That is a gap, not a decision. Until it is closed, run the tools directly:
+**It did not, for a long time, and that is worth knowing rather than forgetting.**
+Until 2026-09-04 the only workflow was Factcheck: 32 tests and 80 assertions sat
+on disk that CI had never once invoked, Pest and PHPStan and Pint were installed
+with nothing calling them, and v0.1.1 went to Packagist on that basis. This file
+described the gap accurately the whole time. Nothing enforced it, which is the
+actual lesson -- a note is not a check.
 
-```sh
-vendor/bin/pest
-vendor/bin/phpstan analyse
-vendor/bin/pint
-```
+**`composer-require-checker.json` whitelists four symbols**, and the reason is
+not "they were noisy":
 
-If you are working in this repo anyway, closing that gap is worth more than most
-feature work you could do here: a telemetry bridge that can leak prompt content
-is exactly the kind of package whose guards should be enforced by a machine
-rather than by whoever remembered.
+- `Illuminate\Contracts\Events\Dispatcher`
+- `Illuminate\Contracts\Support\Arrayable`
+- `Illuminate\Support\ServiceProvider`
+- `config`
+
+This package requires `illuminate/contracts` and `illuminate/support` narrowly,
+rather than the whole framework. But `orchestra/testbench` pulls in
+`laravel/framework`, which **`replace`s** both of those packages -- so at check
+time they are not installed under their own names and the checker cannot resolve
+their symbols. `config` is a helper FUNCTION from an autoloaded `files` entry,
+which the checker cannot see either. All four are genuinely declared; only the
+resolution fails.
+
+**Do not add to that list to silence a failure.** Adding the checker surfaced
+two REAL defects, and they were fixed rather than whitelisted:
+
+- `mb_strcut` (`src/TelemetrySubscriber.php`, the byte-ruler truncation) was used
+  with no `ext-mbstring` in `require`. Composer would install happily on a PHP
+  without mbstring and the truncation would fatal at runtime.
+- `OpenTelemetry\Context\Context` and `ContextInterface` are used directly in
+  `src/SpanStore.php` while only `open-telemetry/api` was declared. The symbols
+  arrived transitively, so an upstream change to `api`'s own dependencies could
+  have removed them without anything here objecting.
+
+Both are now declared. That is the difference the gate buys: a whitelist entry
+records a resolution artefact, a new `require` entry records a real dependency.

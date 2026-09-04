@@ -1,0 +1,8 @@
+{
+    "symbol-whitelist": [
+        "config",
+        "Illuminate\\Contracts\\Events\\Dispatcher",
+        "Illuminate\\Contracts\\Support\\Arrayable",
+        "Illuminate\\Support\\ServiceProvider"
+    ]
+}
