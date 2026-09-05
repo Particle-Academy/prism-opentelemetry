@@ -4,7 +4,7 @@ OpenTelemetry bridge for [Prism](https://github.com/Particle-Academy/prism). It
 subscribes to Prism's neutral telemetry events and turns them into
 [GenAI-convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/) spans —
 a root span per generation, child spans per step and per tool call, with token,
-cost, model, and finish-reason attributes — exported over OTLP to
+cost, model, finish-reason and provider rate-limit attributes — exported over OTLP to
 [Arize Phoenix](https://github.com/Arize-ai/phoenix) or any OTLP backend.
 
 > **Status: under active development.** The Prism-side telemetry events this
@@ -71,10 +71,16 @@ php artisan vendor:publish --tag=prism-opentelemetry-config
 
 ## Privacy
 
-This bridge only reads span metadata (tokens, timing, model, finish reason). It
-never adds prompt or completion text to spans. Prism's own
-`prism.telemetry.capture_content` flag governs whether that content is present on
-the events at all, and it is off by default.
+This bridge only reads span metadata (tokens, timing, model, finish reason,
+provider rate limits). It never adds prompt or completion text to spans. Prism's
+own `prism.telemetry.capture_content` flag governs whether that content is
+present on the events at all, and it is off by default.
+
+One consequence worth knowing: rate limits reach this bridge on the response
+object, and Prism omits the response entirely when `capture_content` is off — so
+a *successful* generation exports `prism.rate_limit.*` only with capture on. A
+generation that FAILS on a provider rate limit exports them either way, because
+they travel on the exception.
 
 ## License
 

@@ -21,7 +21,11 @@ use Prism\Prism\Events\Telemetry\GenerationFailed;
 use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Events\Telemetry\StepCompleted;
 use Prism\Prism\Events\Telemetry\ToolInvoked;
+use Prism\Prism\Exceptions\PrismRateLimitedException;
+use Prism\Prism\ValueObjects\Meta;
+use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
+use Throwable;
 
 /**
  * Builds GenAI-convention OpenTelemetry spans from Prism's telemetry events.
@@ -199,6 +203,7 @@ class TelemetrySubscriber
         $this->applyUsage($span, $event->usage);
         $this->applyOpenInferenceUsage($span, $event->usage);
         $this->applyOutput($span, $event->response);
+        $this->applyRateLimits($span, $this->rateLimitsOfResponse($event->response));
 
         $span->end($this->nowNanos());
 
@@ -214,6 +219,12 @@ class TelemetrySubscriber
         }
 
         $this->flushRemainingTools($event->context->traceId);
+
+        // The 429 is the moment an operator most wants the quota numbers, and
+        // it is the one moment they are guaranteed to be reachable: a rate
+        // limited generation has no response for them to travel on, but
+        // PrismRateLimitedException carries them itself.
+        $this->applyRateLimits($span, $this->rateLimitsOfException($event->exception));
 
         $span->setStatus(StatusCode::STATUS_ERROR, $event->exception->getMessage());
 
@@ -294,6 +305,143 @@ class TelemetrySubscriber
         if ($usage->cost !== null) {
             $span->setAttribute(GenAiAttributes::USAGE_COST, $usage->cost);
         }
+    }
+
+    /**
+     * The rate limits a response carries, or none.
+     *
+     * They live on the response's {@see Meta}, which
+     * is the ONLY channel a successful generation has for them — and that is a
+     * real limitation rather than a design: core nulls `$response` when
+     * `prism.telemetry.capture_content` is off, so quota headroom, which is not
+     * content, currently rides on the content switch. Recorded as G-45.
+     *
+     * @return array<int, mixed>
+     */
+    protected function rateLimitsOfResponse(mixed $response): array
+    {
+        if (! is_object($response) || ! property_exists($response, 'meta')) {
+            return [];
+        }
+
+        $meta = $response->meta;
+
+        if (! is_object($meta) || ! property_exists($meta, 'rateLimits') || ! is_array($meta->rateLimits)) {
+            return [];
+        }
+
+        return array_values($meta->rateLimits);
+    }
+
+    /**
+     * The rate limits an exception carries, or none.
+     *
+     * @return array<int, mixed>
+     */
+    protected function rateLimitsOfException(Throwable $exception): array
+    {
+        if (! $exception instanceof PrismRateLimitedException) {
+            return [];
+        }
+
+        return array_values($exception->rateLimits);
+    }
+
+    /**
+     * Flatten the provider's rate-limit buckets onto the span.
+     *
+     * Present-and-empty and absent are different values to a backend, so a
+     * provider that reported no rate limits writes NOTHING here. That is the
+     * ORDINARY case rather than an edge one: Azure, OpenRouter, Requesty,
+     * Perplexity and XAI all pass `rateLimits: []`, and so does every span a
+     * stream produces. An empty `prism.rate_limit.buckets` would claim we asked
+     * and were told nothing, which is not the same as never having been told.
+     *
+     * The same rule one level down: a bucket contributes a key only for the
+     * fields the provider actually sent, and a bucket that sent no field at all
+     * does not appear in `buckets` either. See {@see GenAiAttributes} for why
+     * the flattening is by name, and what bounds the key space.
+     *
+     * @param  array<int, mixed>  $rateLimits
+     */
+    protected function applyRateLimits(SpanInterface $span, array $rateLimits): void
+    {
+        /** @var array<int, string> $exported */
+        $exported = [];
+
+        foreach ($rateLimits as $rateLimit) {
+            if (count($exported) >= GenAiAttributes::RATE_LIMIT_MAX_BUCKETS) {
+                break;
+            }
+
+            // The arrays above are typed only by PHPDoc, and a docblock is not
+            // a check: a hand-built Meta or exception can carry anything.
+            if (! $rateLimit instanceof ProviderRateLimit) {
+                continue;
+            }
+
+            $name = $this->rateLimitBucketName($rateLimit->name);
+
+            // FIRST bucket of a name wins. A later duplicate — which only a
+            // hand-built list or a hostile provider produces — must not be able
+            // to overwrite the numbers already on the span.
+            if ($name === null || in_array($name, $exported, true)) {
+                continue;
+            }
+
+            $fields = [];
+
+            if ($rateLimit->limit !== null) {
+                $fields[GenAiAttributes::RATE_LIMIT_FIELD_LIMIT] = $rateLimit->limit;
+            }
+
+            if ($rateLimit->remaining !== null) {
+                $fields[GenAiAttributes::RATE_LIMIT_FIELD_REMAINING] = $rateLimit->remaining;
+            }
+
+            if ($rateLimit->resetsAt !== null) {
+                // Seconds, floored. DateTimeInterface::getTimestamp() discards
+                // microseconds rather than rounding, which is the same
+                // direction as Math.floor and math.floor in the ports.
+                $fields[GenAiAttributes::RATE_LIMIT_FIELD_RESETS_AT] = $rateLimit->resetsAt->getTimestamp();
+            }
+
+            if ($fields === []) {
+                continue;
+            }
+
+            foreach ($fields as $field => $value) {
+                $span->setAttribute(GenAiAttributes::RATE_LIMIT_PREFIX.$name.'.'.$field, $value);
+            }
+
+            $exported[] = $name;
+        }
+
+        if ($exported !== []) {
+            $span->setAttribute(GenAiAttributes::RATE_LIMIT_BUCKETS, $exported);
+        }
+    }
+
+    /**
+     * A bucket name that is safe to make part of an attribute KEY, or null.
+     *
+     * Alphabet first, length second — see {@see GenAiAttributes::RATE_LIMIT_NAME_ALPHABET}.
+     */
+    protected function rateLimitBucketName(string $name): ?string
+    {
+        if ($name === '') {
+            return null;
+        }
+
+        $length = strlen($name);
+
+        for ($i = 0; $i < $length; $i++) {
+            if (! str_contains(GenAiAttributes::RATE_LIMIT_NAME_ALPHABET, $name[$i])) {
+                return null;
+            }
+        }
+
+        return $length > GenAiAttributes::RATE_LIMIT_MAX_NAME_LENGTH ? null : $name;
     }
 
     protected function applyOpenInferenceUsage(SpanInterface $span, ?Usage $usage): void
