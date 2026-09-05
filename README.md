@@ -7,10 +7,13 @@ a root span per generation, child spans per step and per tool call, with token,
 cost, model, finish-reason and provider rate-limit attributes — exported over OTLP to
 [Arize Phoenix](https://github.com/Arize-ai/phoenix) or any OTLP backend.
 
-> **Status: under active development.** The Prism-side telemetry events this
-> package consumes currently live on the `feat/telemetry-935` branch of
-> `particle-academy/prism`; this bridge tracks that branch until the events ship
-> in a tagged Prism release.
+> **Status: under active development, and this release needs an unreleased
+> Prism.** The bridge reads the provider rate limits off
+> `GenerationCompleted::$rateLimits`, which core gained after v0.115.1, so the
+> constraint is `>=0.116 <1.0` and `composer install` stays red until Prism
+> v0.116.0 is tagged. The field exists because quota headroom is not content:
+> before it, a successful generation exported no rate limits at all unless the
+> application had turned prompt capture on.
 
 > **Working on this package?** Read **[`AGENTS.md`](AGENTS.md)** first — the boundary
 > this package has to hold, the gates that must be green, and the traps that have

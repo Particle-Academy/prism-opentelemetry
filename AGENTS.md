@@ -20,20 +20,27 @@ convention detail leaks back into core, eighteen providers inherit it.
 So when a mapping is awkward, the fix is here. Adding an attribute to an event
 in core because it would be convenient to read here is the boundary inverting.
 
-## This package tracks a branch, not a tag
+## The constraint is ahead of the tags, deliberately
 
-The Prism-side events it consumes currently live on `feat/telemetry-935` of
-`particle-academy/prism`. This bridge follows that branch until the events ship
-in a tagged release.
+`particle-academy/prism` is required at `>=0.116 <1.0`, and **v0.116.0 does not
+exist yet**. The bridge reads `GenerationCompleted::$rateLimits`, a field core
+gained after v0.115.1, and a `readonly` class has no such property on any
+released version — so under `prefer-lowest` (which this repo's test matrix runs)
+an older Prism fails loudly rather than silently exporting nothing.
 
-Two consequences worth holding in mind:
+That loud failure is the point, and it is why the constraint moved in the same
+commit as the read. The alternative — leaving the range at `>=0.111` and
+tolerating a missing field — is the bandaid: it turns a version mismatch into a
+span that quietly carries no quota, which is the exact failure mode
+(G-45) the field was added to end.
 
-- an event shape can change under you between two `composer update`s, and
-  nothing in a version constraint will warn you;
-- **when the events land in a tagged Prism release, the README's status note and
-  the constraint both change in the same commit.** A status note that still says
-  "under active development" after the thing shipped is the most common way a
-  package misleads its own users.
+**When Prism v0.116.0 is tagged, nothing here changes**; the constraint is
+already correct. What changes is the README's status note, which says the
+install is red until then.
+
+Also worth holding in mind: an event shape can change under you between two
+`composer update`s, and nothing in a version constraint warns you about a field
+whose MEANING moved.
 
 ## Span content carries prompts, tool arguments, and PII
 

@@ -19,7 +19,6 @@ use Prism\Prism\Events\Telemetry\GenerationFailed;
 use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
 use Prism\Prism\Telemetry\TelemetryContext;
-use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
 
@@ -53,7 +52,7 @@ use Prism\Prism\ValueObjects\Usage;
 final readonly class CorpusPayload implements Arrayable
 {
     /** @param array<string, mixed> $payload */
-    public function __construct(private array $payload, public ?Meta $meta = null) {}
+    public function __construct(private array $payload) {}
 
     /** @return array<string, mixed> */
     #[\Override]
@@ -66,38 +65,37 @@ final readonly class CorpusPayload implements Arrayable
 /**
  * The response object this bridge is handed for one case.
  *
- * Rate limits reach the reference on the RESPONSE's Meta and nowhere else, so a
- * case that declares them needs a response object even when it captures no
- * content -- which is why this returns one for a null output. That asymmetry is
- * the reference's, not the corpus's: core nulls the response entirely when
- * `prism.telemetry.capture_content` is off, so quota headroom currently rides
- * on the content switch (G-45).
+ * Only the OUTPUT travels here. Rate limits used to have to as well -- the
+ * reference's only channel for them was the response's Meta, so a case
+ * declaring quota needed a response object even with capture off, which is a
+ * state core never actually produces. That was G-45, and closing it made all
+ * three languages take the buckets as the completion event's own argument.
+ *
+ * @param  array<string, mixed>  $generation
+ */
+function corpusResponse(array $generation): ?CorpusPayload
+{
+    return $generation['output'] === null ? null : new CorpusPayload($generation['output']);
+}
+
+/**
+ * The quota buckets one case declares, as the value objects the event carries.
  *
  * `resets_at` is parsed HERE and not in the bridge: the bridge is handed an
  * instant, so nothing in this comparison depends on three languages agreeing
  * about how to render or re-render a date.
  *
  * @param  array<string, mixed>  $generation
+ * @return array<int, ProviderRateLimit>
  */
-function corpusResponse(array $generation): ?CorpusPayload
+function corpusRateLimits(array $generation): array
 {
-    if ($generation['output'] === null && $generation['rate_limits'] === null) {
-        return null;
-    }
-
-    $rateLimits = array_map(static fn (array $rateLimit): ProviderRateLimit => new ProviderRateLimit(
+    return array_map(static fn (array $rateLimit): ProviderRateLimit => new ProviderRateLimit(
         name: $rateLimit['name'],
         limit: $rateLimit['limit'],
         remaining: $rateLimit['remaining'],
         resetsAt: $rateLimit['resets_at'] === null ? null : new Carbon($rateLimit['resets_at']),
     ), $generation['rate_limits'] ?? []);
-
-    return new CorpusPayload(
-        $generation['output'] ?? [],
-        $generation['rate_limits'] === null
-            ? null
-            : new Meta(id: '', model: $generation['model'], rateLimits: $rateLimits),
-    );
 }
 
 /**
@@ -177,6 +175,7 @@ function rootSpanFor(array $case): array
         $generation['finish_reason'] === null ? null : FinishReason::from($generation['finish_reason']),
         $usage,
         corpusResponse($generation),
+        corpusRateLimits($generation),
     ));
 
     $spans = $exporter->getSpans();
@@ -339,8 +338,10 @@ it('exports the SAME rate-limit attributes as both ports, byte for byte', functi
 
 it('exports the rate limits a rate-limited generation FAILED with', function (): void {
     // The 429 is the moment an operator most wants these numbers, and the one
-    // moment they cannot arrive on a response -- there is no response. This is
-    // also the only path where they are not gated by content capture (G-45).
+    // moment they cannot arrive on a response -- there is no response, so they
+    // travel on the exception instead. This USED to be the only path where they
+    // were not gated by content capture, which was G-45: it meant the numbers
+    // showed up exactly when it was too late to act on them.
     $exporter = new InMemoryExporter;
     $sub = new TelemetrySubscriber((new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('prism-parity'), new SpanStore);
     $ctx = new TelemetryContext('rate-limited', TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 0.0);

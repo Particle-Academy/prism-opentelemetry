@@ -22,7 +22,6 @@ use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Events\Telemetry\StepCompleted;
 use Prism\Prism\Events\Telemetry\ToolInvoked;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
-use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
 use Throwable;
@@ -203,7 +202,13 @@ class TelemetrySubscriber
         $this->applyUsage($span, $event->usage);
         $this->applyOpenInferenceUsage($span, $event->usage);
         $this->applyOutput($span, $event->response);
-        $this->applyRateLimits($span, $this->rateLimitsOfResponse($event->response));
+        // NOT read off `$event->response`. Core nulls the response when
+        // `prism.telemetry.capture_content` is off -- the default -- so quota
+        // headroom used to ride on a privacy switch it has nothing to do with,
+        // and vanished from every successful generation (G-45). The event now
+        // carries the buckets as their own field, unconditionally, exactly as
+        // it carries usage.
+        $this->applyRateLimits($span, $event->rateLimits);
 
         $span->end($this->nowNanos());
 
@@ -305,32 +310,6 @@ class TelemetrySubscriber
         if ($usage->cost !== null) {
             $span->setAttribute(GenAiAttributes::USAGE_COST, $usage->cost);
         }
-    }
-
-    /**
-     * The rate limits a response carries, or none.
-     *
-     * They live on the response's {@see Meta}, which
-     * is the ONLY channel a successful generation has for them — and that is a
-     * real limitation rather than a design: core nulls `$response` when
-     * `prism.telemetry.capture_content` is off, so quota headroom, which is not
-     * content, currently rides on the content switch. Recorded as G-45.
-     *
-     * @return array<int, mixed>
-     */
-    protected function rateLimitsOfResponse(mixed $response): array
-    {
-        if (! is_object($response) || ! property_exists($response, 'meta')) {
-            return [];
-        }
-
-        $meta = $response->meta;
-
-        if (! is_object($meta) || ! property_exists($meta, 'rateLimits') || ! is_array($meta->rateLimits)) {
-            return [];
-        }
-
-        return array_values($meta->rateLimits);
     }
 
     /**
