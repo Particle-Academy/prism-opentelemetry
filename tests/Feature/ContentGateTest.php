@@ -17,6 +17,8 @@ use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Enums\TelemetryOperation;
 use Prism\Prism\Telemetry\Telemetry;
 use Prism\Prism\Testing\TextResponseFake;
+use Prism\Prism\ValueObjects\Media\Image;
+use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
@@ -121,3 +123,79 @@ it('exports both when the application has opted into content capture', function 
         ->toHaveKey(OpenInferenceAttributes::OUTPUT_VALUE)
         ->and($attributes['prism.rate_limit.requests.remaining'])->toBe(999);
 });
+
+describe('media inside captured content', function (): void {
+    // Content capture was understood to export TEXT. A message's stored form
+    // carries each attachment's bytes, so without this a span carried the
+    // user's uploaded file to the tracing vendor, up to the content cap.
+
+    function capturedInput(): string
+    {
+        [$exporter] = composedHarness();
+
+        $request = requestWithAnImage();
+
+        $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', $request);
+        Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+        return (string) ($exporter->getSpans()[0]->getAttributes()->toArray()[OpenInferenceAttributes::INPUT_VALUE] ?? '');
+    }
+
+    it('withholds the bytes by default, and says how big they were', function (): void {
+        config()->set('prism.telemetry.capture_content', true);
+        config()->set('prism.telemetry.capture_media', false);
+
+        $input = capturedInput();
+
+        expect($input)->toContain('What is in this?')
+            ->and($input)->toContain('"mime_type":"image/png"')
+            ->and($input)->toContain('"omitted_bytes":17')
+            ->and($input)->not->toContain(base64_encode('SECRET-FILE-BYTES'));
+    });
+
+    it('sends the bytes when capture_media is on', function (): void {
+        config()->set('prism.telemetry.capture_content', true);
+        config()->set('prism.telemetry.capture_media', true);
+        app()->forgetInstance(TelemetrySubscriber::class);
+
+        $input = capturedInputWithMedia();
+
+        expect($input)->toContain(base64_encode('SECRET-FILE-BYTES'))
+            ->and($input)->not->toContain('omitted_bytes');
+    });
+});
+
+function capturedInputWithMedia(): string
+{
+    $exporter = new InMemoryExporter;
+    $subscriber = new TelemetrySubscriber(
+        (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('composed'),
+        new SpanStore,
+        captureMedia: true,
+    );
+    app(Dispatcher::class)->subscribe($subscriber);
+
+    $request = requestWithAnImage();
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', $request);
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    return (string) ($exporter->getSpans()[0]->getAttributes()->toArray()[OpenInferenceAttributes::INPUT_VALUE] ?? '');
+}
+
+/**
+ * What the bridge reads off a text request: its messages. A stand-in rather than
+ * a real Request, because this package's test app does not boot Prism's service
+ * provider, and the bridge only ever calls messages() on it.
+ */
+function requestWithAnImage(): object
+{
+    return new class
+    {
+        /** @return list<UserMessage> */
+        public function messages(): array
+        {
+            return [new UserMessage('What is in this?', [Image::fromBase64(base64_encode('SECRET-FILE-BYTES'), 'image/png')])];
+        }
+    };
+}

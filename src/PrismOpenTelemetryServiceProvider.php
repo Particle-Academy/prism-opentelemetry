@@ -26,6 +26,10 @@ class PrismOpenTelemetryServiceProvider extends ServiceProvider
             $app->make(SpanStore::class),
             (bool) config('prism-opentelemetry.record_exceptions', true),
             (int) config('prism-opentelemetry.content_max_length', 65_536),
+            // Prism's own switch, beside `capture_content`, so one setting
+            // decides for core and for this bridge. Absent before prism
+            // v0.121.0, which reads as off.
+            (bool) config('prism.telemetry.capture_media', false),
         ));
     }
 

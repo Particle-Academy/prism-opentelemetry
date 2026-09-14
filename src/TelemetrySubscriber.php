@@ -13,6 +13,7 @@ use OpenTelemetry\API\Trace\TracerInterface;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ContextInterface;
 use Prism\OpenTelemetry\Support\GenAiAttributes;
+use Prism\OpenTelemetry\Support\MediaContent;
 use Prism\OpenTelemetry\Support\OpenInferenceAttributes;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Enums\TelemetryOperation;
@@ -40,6 +41,7 @@ class TelemetrySubscriber
         protected SpanStore $store,
         protected bool $recordExceptions = true,
         protected int $maxContentLength = 65_536,
+        protected bool $captureMedia = false,
     ) {}
 
     public function subscribe(Dispatcher $events): void
@@ -565,6 +567,12 @@ class TelemetrySubscriber
 
     protected function json(mixed $value): string
     {
+        // Every structured content attribute passes through here, so this is
+        // the one place media bytes are withheld. See MediaContent.
+        if (! $this->captureMedia) {
+            $value = MediaContent::withoutBytes($value);
+        }
+
         // Fail-safe: telemetry must never throw into the app. Substitute bad
         // UTF-8 and emit partial output instead of aborting the generation.
         $encoded = json_encode($value, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

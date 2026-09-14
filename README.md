@@ -74,16 +74,18 @@ php artisan vendor:publish --tag=prism-opentelemetry-config
 
 ## Privacy
 
-This bridge only reads span metadata (tokens, timing, model, finish reason,
-provider rate limits). It never adds prompt or completion text to spans. Prism's
-own `prism.telemetry.capture_content` flag governs whether that content is
-present on the events at all, and it is off by default.
+**By default, spans carry metadata only**: tokens, timing, model, finish reason
+and provider rate limits. Prompts, completions, tool arguments and tool results
+are added as `input.value` / `output.value` **only when Prism's
+`prism.telemetry.capture_content` is on**, and it is off by default. Each
+captured attribute is cut to `content_max_length`.
 
-One consequence worth knowing: rate limits reach this bridge on the response
-object, and Prism omits the response entirely when `capture_content` is off — so
-a *successful* generation exports `prism.rate_limit.*` only with capture on. A
-generation that FAILS on a provider rate limit exports them either way, because
-they travel on the exception.
+**Attachment bytes are withheld even with content capture on.** A captured
+message's images, documents, audio and video keep their kind, mime type, file id
+and filename, and their `base64` is replaced by `omitted_bytes`, the size of what
+was left out. To export the bytes as well, set Prism's
+`prism.telemetry.capture_media` (`PRISM_TELEMETRY_CAPTURE_MEDIA=true`). Bytes a
+user pastes into a prompt as text are text, and are exported with the prompt.
 
 ## License
 
