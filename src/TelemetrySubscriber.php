@@ -43,8 +43,18 @@ class TelemetrySubscriber
      *
      * The attribute KEY carries an index, so an unbounded tool list is an
      * unbounded key space — the hazard the rate-limit bucket cap exists for,
-     * arriving by a different route. A model given more than 64 tools has a
-     * bigger problem than its telemetry.
+     * arriving by a different route.
+     *
+     * IT IS NOT THE BINDING LIMIT, and the real one is not ours. The
+     * OpenTelemetry SDK caps a span at 128 attributes by default
+     * (`SpanLimits::DEFAULT_SPAN_ATTRIBUTE_COUNT_LIMIT`) and drops the excess
+     * SILENTLY, so 64 tools is already past it: two attributes each ungated,
+     * four under capture. A consumer on SDK defaults with 30-odd tools — an MCP
+     * client reaches that easily — loses the tail of the tool list.
+     *
+     * Losing the tail is the acceptable failure, and it is only acceptable
+     * because these are written LAST. Raise `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`,
+     * or build a TracerProvider with a `SpanLimitsBuilder`, to keep them all.
      */
     protected const MAX_TOOLS = 64;
 
@@ -104,8 +114,17 @@ class TelemetrySubscriber
             $span->setAttribute(OpenInferenceAttributes::USER_ID, $context->userId);
         }
 
-        $this->applyTools($span, $event->tools, $event->request);
         $this->applyInput($span, $event->request);
+
+        // HELD, NOT WRITTEN. The SDK caps a span at 128 attributes by default
+        // and drops the rest silently, and a tool list is two attributes per
+        // tool — four under capture. Written here, 31 tools filled the span
+        // before usage, finish reason and output were ever set. See
+        // SpanStore::$advertisedTools.
+        $this->store->holdAdvertisedTools(
+            $context->traceId,
+            $this->toolAttributes($event->tools, $event->request),
+        );
 
         $this->store->start(
             $context->traceId,
@@ -234,9 +253,30 @@ class TelemetrySubscriber
         // it carries usage.
         $this->applyRateLimits($span, $event->rateLimits);
 
+        // LAST, DELIBERATELY. Everything above is a handful of attributes and
+        // is what somebody reads to answer "what did this cost" and "did it
+        // finish". The tool list is two per tool, four under capture, and the
+        // SDK's default ceiling is 128 dropped silently -- so whichever of
+        // these is written last is the one that disappears on a long tool list,
+        // and this is the order in which that is survivable.
+        $this->writeHeldTools($span, $event->context->traceId);
+
         $span->end($this->nowNanos());
 
         $this->store->forget($event->context->traceId);
+    }
+
+    /**
+     * Write the tool attributes held since the generation started.
+     *
+     * Also clears them, so a store shared by a long-lived worker does not
+     * accumulate the tool list of every generation it has ever seen.
+     */
+    protected function writeHeldTools(SpanInterface $span, string $traceId): void
+    {
+        foreach ($this->store->takeAdvertisedTools($traceId) as $key => $value) {
+            $span->setAttribute($key, $value);
+        }
     }
 
     public function onGenerationFailed(GenerationFailed $event): void
@@ -260,6 +300,11 @@ class TelemetrySubscriber
         if ($this->recordExceptions) {
             $span->recordException($event->exception);
         }
+
+        // A failed generation carries its tool list too, and for the same
+        // reason it goes last: the status, the exception and the quota buckets
+        // are what a reader came for.
+        $this->writeHeldTools($span, $event->context->traceId);
 
         $span->end($this->nowNanos());
 
@@ -549,8 +594,19 @@ class TelemetrySubscriber
      *
      * @param  array<int, mixed>  $tools
      */
-    protected function applyTools(SpanInterface $span, array $tools, mixed $request): void
+    /**
+     * The tool attributes, built but not yet written.
+     *
+     * Separated from the writing so the caller decides WHEN they land, which is
+     * the whole of the fix: at start they starved the span of its own outcome,
+     * at the end they are merely the first thing truncated.
+     *
+     * @param  array<int, mixed>  $tools
+     * @return array<non-empty-string, scalar>
+     */
+    protected function toolAttributes(array $tools, mixed $request): array
     {
+        $attributes = [];
         // Bounded, because a tool name is not necessarily ours. `prism-mcp`
         // builds tools from a REMOTE server's advertised definitions, so a
         // hostile or careless one can supply a very long name, and this now
@@ -565,14 +621,10 @@ class TelemetrySubscriber
                 continue;
             }
 
-            $span->setAttribute(
-                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_NAME,
-                $this->boundedName($tool->name),
-            );
-            $span->setAttribute(
-                GenAiAttributes::TOOLS_PREFIX.$index.'.'.GenAiAttributes::TOOL_FIELD_DIGEST,
-                $tool->digest,
-            );
+            $attributes[OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_NAME]
+                = $this->boundedName($tool->name);
+            $attributes[GenAiAttributes::TOOLS_PREFIX.$index.'.'.GenAiAttributes::TOOL_FIELD_DIGEST]
+                = $tool->digest;
 
             $definition = $definitions[$tool->name] ?? null;
 
@@ -580,15 +632,13 @@ class TelemetrySubscriber
                 continue;
             }
 
-            $span->setAttribute(
-                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_DESCRIPTION,
-                $this->bounded($definition['description']),
-            );
-            $span->setAttribute(
-                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_JSON_SCHEMA,
-                $this->json($definition['parameters']),
-            );
+            $attributes[OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_DESCRIPTION]
+                = $this->bounded($definition['description']);
+            $attributes[OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_JSON_SCHEMA]
+                = $this->json($definition['parameters']);
         }
+
+        return $attributes;
     }
 
     /**

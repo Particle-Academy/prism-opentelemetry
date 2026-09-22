@@ -393,3 +393,60 @@ it('writes no tool attributes for a generation with no tools', function (): void
     expect(array_filter($written, fn (string $key): bool => str_starts_with($key, 'llm.tools.')))->toBe([])
         ->and(array_filter($written, fn (string $key): bool => str_starts_with($key, 'prism.tools.')))->toBe([]);
 });
+
+it('keeps usage and finish reason on a span offering many tools', function (): void {
+    // REPORTED FROM PRODUCTION, and a regression this package introduced.
+    //
+    // The OpenTelemetry SDK caps a span at 128 attributes by default
+    // (SpanLimits::DEFAULT_SPAN_ATTRIBUTE_COUNT_LIMIT) and drops the excess
+    // SILENTLY. Tool attributes were written at onGenerationStarted, two per
+    // tool ungated and four under capture, BEFORE anything else -- so a step
+    // offering 31 tools filled the span before `applyInput` ran, and usage,
+    // finish reason and output never landed at all.
+    //
+    // The consumer saw roots with a model and a tool list and nothing else, and
+    // no error anywhere: "the generation looks unfinished" rather than "the
+    // tail of the tool list is missing". An MCP client reaches 30 tools easily.
+    //
+    // The tools are written LAST now, so the budget goes first to the few
+    // attributes people actually read and truncation costs the end of the tool
+    // list instead of the outcome of the call.
+    // Capture ON with 31 tools is the consumer's measured case: four attributes
+    // per tool is 124, and the base attributes finish the budget before
+    // anything about the OUTCOME of the call gets written.
+    config()->set('prism.telemetry.capture_content', true);
+
+    [$exporter] = composedHarness();
+
+    $tools = [];
+
+    for ($i = 0; $i < 31; $i++) {
+        $tools[] = (new Tool)->as('tool_'.$i)->for('Tool number '.$i)->using(fn (): string => 'ok');
+    }
+
+    $context = Telemetry::start(
+        TelemetryOperation::Text,
+        'anthropic',
+        'claude-sonnet-4-5',
+        new Request(model: 'claude-sonnet-4-5', tools: $tools),
+    );
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(922, 210, cacheReadInputTokens: 34_678));
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    // The attributes somebody reads to answer "what did this cost" and "did it
+    // finish" must survive a long tool list.
+    expect($attributes)->toMatchArray([
+        GenAiAttributes::USAGE_INPUT_TOKENS => 35_600,
+        GenAiAttributes::USAGE_OUTPUT_TOKENS => 210,
+        GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS => 34_678,
+        OpenInferenceAttributes::TOKEN_COUNT_TOTAL => 35_810,
+    ]);
+
+    expect($attributes)->toHaveKey(GenAiAttributes::RATE_LIMIT_BUCKETS)
+        ->and($attributes['gen_ai.response.finish_reasons'])->toBe(['Stop']);
+
+    // And the first tool is still there, so this is not passing by dropping the
+    // feature altogether.
+    expect($attributes)->toHaveKey('llm.tools.0.tool.name');
+});

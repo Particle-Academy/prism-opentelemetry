@@ -34,6 +34,25 @@ class SpanStore
     /** @var array<string, list<PendingTool>> */
     protected array $pendingTools = [];
 
+    /**
+     * The tools a generation advertised, held until the span is ending.
+     *
+     * NOT written when they arrive, which is the whole reason this exists. The
+     * OpenTelemetry SDK caps a span at 128 attributes by default and drops the
+     * excess SILENTLY, and a tool list is two attributes per tool ungated and
+     * four under capture. Written at start, a step offering 31 tools filled the
+     * span before anything about the OUTCOME of the call — usage, finish
+     * reason, input, output — had been set, and a consumer saw roots carrying a
+     * model and a tool list and nothing else, with no error anywhere.
+     *
+     * Held here and written LAST, the same truncation costs the END OF THE TOOL
+     * LIST instead of the result of the call. Both are lossy at the limit; only
+     * one of them is legible.
+     *
+     * @var array<string, array<non-empty-string, scalar>>
+     */
+    protected array $advertisedTools = [];
+
     public function start(string $traceId, SpanInterface $span, ContextInterface $context, int $startNanos): void
     {
         $this->roots[$traceId] = [
@@ -46,6 +65,26 @@ class SpanStore
     public function has(string $traceId): bool
     {
         return isset($this->roots[$traceId]);
+    }
+
+    /**
+     * @param  array<non-empty-string, scalar>  $tools
+     */
+    public function holdAdvertisedTools(string $traceId, array $tools): void
+    {
+        $this->advertisedTools[$traceId] = $tools;
+    }
+
+    /**
+     * @return array<non-empty-string, scalar>
+     */
+    public function takeAdvertisedTools(string $traceId): array
+    {
+        $tools = $this->advertisedTools[$traceId] ?? [];
+
+        unset($this->advertisedTools[$traceId]);
+
+        return $tools;
     }
 
     public function span(string $traceId): ?SpanInterface
@@ -133,6 +172,15 @@ class SpanStore
 
     public function forget(string $traceId): void
     {
-        unset($this->roots[$traceId], $this->stepContexts[$traceId], $this->pendingTools[$traceId]);
+        unset(
+            $this->roots[$traceId],
+            $this->stepContexts[$traceId],
+            $this->pendingTools[$traceId],
+            // `takeAdvertisedTools` already clears these on the normal path.
+            // Cleared here too because a generation that never completes would
+            // otherwise leave its tool list behind — in a long-lived queue
+            // worker that is an unbounded hold on every generation it ever saw.
+            $this->advertisedTools[$traceId],
+        );
     }
 }
