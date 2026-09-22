@@ -23,6 +23,8 @@ use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Events\Telemetry\StepCompleted;
 use Prism\Prism\Events\Telemetry\ToolInvoked;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
+use Prism\Prism\Tool;
+use Prism\Prism\ValueObjects\AdvertisedTool;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
 use Throwable;
@@ -36,6 +38,25 @@ use Throwable;
  */
 class TelemetrySubscriber
 {
+    /**
+     * At most this many tools reach a span.
+     *
+     * The attribute KEY carries an index, so an unbounded tool list is an
+     * unbounded key space — the hazard the rate-limit bucket cap exists for,
+     * arriving by a different route. A model given more than 64 tools has a
+     * bigger problem than its telemetry.
+     */
+    protected const MAX_TOOLS = 64;
+
+    /**
+     * And at most this many bytes of a tool's name.
+     *
+     * `prism-mcp` builds tools from a REMOTE server's advertised definitions,
+     * so a name is not always ours to trust, and since the ungated half runs on
+     * every generation a long one would ride every span in the system.
+     */
+    protected const MAX_TOOL_NAME_BYTES = 512;
+
     public function __construct(
         protected TracerInterface $tracer,
         protected SpanStore $store,
@@ -83,6 +104,7 @@ class TelemetrySubscriber
             $span->setAttribute(OpenInferenceAttributes::USER_ID, $context->userId);
         }
 
+        $this->applyTools($span, $event->tools, $event->request);
         $this->applyInput($span, $event->request);
 
         $this->store->start(
@@ -502,6 +524,120 @@ class TelemetrySubscriber
                 $usage->thoughtTokens,
             );
         }
+    }
+
+    /**
+     * The tools the model was offered, in two halves that answer two questions.
+     *
+     * THE UNGATED HALF — name and digest — comes from the EVENT, which carries
+     * it whatever `prism.telemetry.capture_content` says. It answers "did the
+     * tool set change between these two turns", which is what somebody asks
+     * when a provider's prompt cache missed and the bill went up. That question
+     * is asked in production, and production is exactly where the content gate
+     * is off, so a gated answer would be absent whenever it was wanted. Same
+     * reasoning that put rate limits outside the gate in G-45.
+     *
+     * THE GATED HALF — description and JSON schema — comes from the REQUEST,
+     * which core replaces with null unless capture is on. It answers "WHAT
+     * changed", and a tool description is instructions to a model, so it
+     * belongs behind the gate. A reader who has the first half and wants the
+     * second can turn capture on, or read the definition in their own repo.
+     *
+     * The index ties them together: `llm.tools.0.tool.name` and
+     * `prism.tools.0.digest` are the same tool, and `llm.tools.0.tool.description`
+     * joins them when capture is on.
+     *
+     * @param  array<int, mixed>  $tools
+     */
+    protected function applyTools(SpanInterface $span, array $tools, mixed $request): void
+    {
+        // Bounded, because a tool name is not necessarily ours. `prism-mcp`
+        // builds tools from a REMOTE server's advertised definitions, so a
+        // hostile or careless one can supply a very long name, and this now
+        // runs on every generation rather than only under capture. The cap is
+        // on the VALUE, not a key, so there is no key-space hazard of the kind
+        // the rate-limit alphabet exists for -- but an unbounded string on
+        // every span is still somebody's observability bill.
+        $definitions = $this->toolDefinitions($request);
+
+        foreach (array_slice(array_values($tools), 0, self::MAX_TOOLS) as $index => $tool) {
+            if (! $tool instanceof AdvertisedTool) {
+                continue;
+            }
+
+            $span->setAttribute(
+                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_NAME,
+                $this->boundedName($tool->name),
+            );
+            $span->setAttribute(
+                GenAiAttributes::TOOLS_PREFIX.$index.'.'.GenAiAttributes::TOOL_FIELD_DIGEST,
+                $tool->digest,
+            );
+
+            $definition = $definitions[$tool->name] ?? null;
+
+            if ($definition === null) {
+                continue;
+            }
+
+            $span->setAttribute(
+                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_DESCRIPTION,
+                $this->bounded($definition['description']),
+            );
+            $span->setAttribute(
+                OpenInferenceAttributes::TOOLS_PREFIX.$index.'.'.OpenInferenceAttributes::TOOL_FIELD_JSON_SCHEMA,
+                $this->json($definition['parameters']),
+            );
+        }
+    }
+
+    /**
+     * Descriptions and schemas, keyed by tool name, or none.
+     *
+     * Reached only through the request, so this is empty exactly when capture
+     * is off — the gate is core's and is not re-implemented here.
+     *
+     * @return array<string, array{description: string, parameters: array<string, mixed>}>
+     */
+    protected function toolDefinitions(mixed $request): array
+    {
+        if (! is_object($request) || ! method_exists($request, 'tools')) {
+            return [];
+        }
+
+        $tools = $request->tools();
+
+        if (! is_array($tools)) {
+            return [];
+        }
+
+        $definitions = [];
+
+        foreach ($tools as $tool) {
+            if (! $tool instanceof Tool) {
+                continue;
+            }
+
+            $definitions[$tool->name()] = [
+                'description' => $tool->description(),
+                'parameters' => $tool->parametersAsArray(),
+            ];
+        }
+
+        return $definitions;
+    }
+
+    /**
+     * A tool name, capped hard and separately from captured content.
+     *
+     * Not `bounded()`: that ruler is `prism.telemetry.content_max_length`, which
+     * an operator raises to see more of a prompt. A name is not content and has
+     * no reason to follow it — 512 bytes is longer than any real tool name and
+     * short enough that a hostile one cannot dominate a span.
+     */
+    protected function boundedName(string $name): string
+    {
+        return mb_strcut($name, 0, self::MAX_TOOL_NAME_BYTES);
     }
 
     protected function applyInput(SpanInterface $span, mixed $request): void

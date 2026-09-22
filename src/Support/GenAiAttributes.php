@@ -74,6 +74,31 @@ final class GenAiAttributes
     // Prism-specific attributes (namespaced to avoid colliding with semconv).
     public const USAGE_COST = 'gen_ai.usage.cost';
 
+    /**
+     * A digest of a tool's declaration, beside its OpenInference entry.
+     *
+     * `prism.tools.0.digest`, indexed to line up with `llm.tools.0.tool.name`.
+     *
+     * CUSTOM because neither registry has one. Checked 2026-09-21: OpenInference
+     * carries `llm.tools.<i>.tool.{name,description,json_schema}` and no
+     * fingerprint, and the GenAI registry has no tool-definition attributes at
+     * all. So this sits under `prism.` beside {@see self::STEP_INDEX} rather
+     * than inside `llm.` — squatting in someone else's namespace is worse than
+     * being outside it, for the reason spelled out on the rate-limit block.
+     *
+     * It exists because a NAME cannot answer the question a cache miss asks. A
+     * description rewritten between turns changes the prefix a provider cached
+     * while every name stays identical, and the digest is what moves.
+     *
+     * NOT AN MCP TRUST PIN. `prism-mcp` hashes a tool definition too, for a
+     * different question over different inputs; G-20 invalidated every pin in
+     * existence when the reference and the ports were reconciled. Comparing one
+     * to the other gives a confident wrong answer.
+     */
+    public const TOOLS_PREFIX = 'prism.tools.';
+
+    public const TOOL_FIELD_DIGEST = 'digest';
+
     public const STEP_INDEX = 'prism.step.index';
 
     public const TOOL_INDEX = 'prism.tool.index';

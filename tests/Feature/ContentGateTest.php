@@ -17,6 +17,8 @@ use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Enums\TelemetryOperation;
 use Prism\Prism\Telemetry\Telemetry;
 use Prism\Prism\Testing\TextResponseFake;
+use Prism\Prism\Text\Request;
+use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\Media\Image;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\Meta;
@@ -272,4 +274,122 @@ it('leaves the cache attributes off a provider that reports none', function (): 
         ->and($attributes)->not->toHaveKey(GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS)
         ->and($attributes)->not->toHaveKey(GenAiAttributes::USAGE_REASONING_OUTPUT_TOKENS)
         ->and($attributes)->not->toHaveKey(OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ);
+});
+
+it('exports the tool set with content capture OFF, which is where it is needed', function (): void {
+    // prism-opentelemetry#2. A provider caches a prompt PREFIX and the tool
+    // array is part of it, so a consumer explaining a cache miss needs to know
+    // what the tool set was. They could not: tools live on the request, and
+    // core nulls the request when capture is off -- the default, and therefore
+    // the state every production span is exported in.
+    //
+    // Asserted together with the gate being shut, exactly as the rate-limit
+    // test above is. A version of this that enabled capture would pass against
+    // the defect.
+    config()->set('prism.telemetry.capture_content', false);
+
+    [$exporter] = composedHarness();
+
+    $context = Telemetry::start(
+        TelemetryOperation::Text,
+        'anthropic',
+        'claude-sonnet-4-5',
+        new Request(model: 'claude-sonnet-4-5', tools: [
+            (new Tool)->as('search')->for('Search the docs')->using(fn (): string => 'ok'),
+            (new Tool)->as('write')->for('Write a file')->using(fn (): string => 'ok'),
+        ]),
+    );
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    expect($attributes)->toMatchArray([
+        'llm.tools.0.tool.name' => 'search',
+        'llm.tools.1.tool.name' => 'write',
+    ]);
+
+    expect($attributes['prism.tools.0.digest'])->toStartWith('sha256:')
+        ->and($attributes['prism.tools.0.digest'])->not->toBe($attributes['prism.tools.1.digest']);
+
+    // The content half stays behind the gate. Both halves of this matter: the
+    // names arrived AND the descriptions did not.
+    expect($attributes)
+        ->not->toHaveKey('llm.tools.0.tool.description')
+        ->and($attributes)->not->toHaveKey('llm.tools.0.tool.json_schema')
+        ->and($attributes)->not->toHaveKey(OpenInferenceAttributes::INPUT_VALUE);
+});
+
+it('keeps the tools in the order they were sent, because a reorder is a cache miss', function (): void {
+    // A provider caches the tools array AS SERIALISED, so the same tools in a
+    // different order is a different prefix and a miss. The index in
+    // `llm.tools.<i>` is what carries that, and sorting the list -- the reflex,
+    // since a set feels more canonical -- would make exactly that case
+    // invisible, in the reassuring direction.
+    config()->set('prism.telemetry.capture_content', false);
+
+    [$exporter] = composedHarness();
+
+    $context = Telemetry::start(
+        TelemetryOperation::Text,
+        'anthropic',
+        'claude-sonnet-4-5',
+        new Request(model: 'claude-sonnet-4-5', tools: [
+            (new Tool)->as('zebra')->for('Last alphabetically, first in the array')->using(fn (): string => 'ok'),
+            (new Tool)->as('alpha')->for('First alphabetically, last in the array')->using(fn (): string => 'ok'),
+        ]),
+    );
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    expect($attributes)->toMatchArray([
+        'llm.tools.0.tool.name' => 'zebra',
+        'llm.tools.1.tool.name' => 'alpha',
+    ]);
+});
+
+it('adds the definitions only when capture is ON', function (): void {
+    // The other half. A tool description is instructions to a model, so it
+    // belongs behind the gate -- and the ungated half is unchanged by turning
+    // the gate on, which is what makes them two answers to two questions
+    // rather than one thing with a switch.
+    config()->set('prism.telemetry.capture_content', true);
+
+    [$exporter] = composedHarness();
+
+    $context = Telemetry::start(
+        TelemetryOperation::Text,
+        'anthropic',
+        'claude-sonnet-4-5',
+        new Request(model: 'claude-sonnet-4-5', tools: [
+            (new Tool)->as('search')->for('Search the docs')->using(fn (): string => 'ok'),
+        ]),
+    );
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    expect($attributes)->toMatchArray([
+        'llm.tools.0.tool.name' => 'search',
+        'llm.tools.0.tool.description' => 'Search the docs',
+    ]);
+
+    expect($attributes['llm.tools.0.tool.json_schema'])->toBeString();
+});
+
+it('writes no tool attributes for a generation with no tools', function (): void {
+    // The control. Without it the tests above pass against code that writes a
+    // tool attribute unconditionally, and every embeddings or image span in the
+    // system would carry an empty one.
+    config()->set('prism.telemetry.capture_content', false);
+
+    [$exporter] = composedHarness();
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    $written = array_keys($exporter->getSpans()[0]->getAttributes()->toArray());
+
+    expect(array_filter($written, fn (string $key): bool => str_starts_with($key, 'llm.tools.')))->toBe([])
+        ->and(array_filter($written, fn (string $key): bool => str_starts_with($key, 'prism.tools.')))->toBe([]);
 });

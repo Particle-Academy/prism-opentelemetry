@@ -58,6 +58,31 @@ final class OpenInferenceAttributes
 
     public const TOKEN_COUNT_COMPLETION_DETAILS_REASONING = 'llm.token_count.completion_details.reasoning';
 
+    /**
+     * The tools the model was offered, flattened by INDEX.
+     *
+     * `llm.tools.0.tool.name`, `llm.tools.1.tool.name`, and so on. The index is
+     * the standard's own shape, and it is why this needs no invented list
+     * attribute and no sorting decision: ORDER IS PRESERVED BY CONSTRUCTION.
+     *
+     * That matters more than it looks. A provider caches the tools array AS
+     * SERIALISED, so the same tools in a different order is a different prefix
+     * and a cache miss. Any representation that lost the order — a sorted name
+     * list, a map keyed by name — would report an unchanged tool set for a turn
+     * that actually missed the cache, which is the reassuring direction to be
+     * wrong in.
+     *
+     * Checked 2026-09-21 against Arize-ai/openinference's
+     * `spec/semantic_conventions.md`.
+     */
+    public const TOOLS_PREFIX = 'llm.tools.';
+
+    public const TOOL_FIELD_NAME = 'tool.name';
+
+    public const TOOL_FIELD_DESCRIPTION = 'tool.description';
+
+    public const TOOL_FIELD_JSON_SCHEMA = 'tool.json_schema';
+
     public const INPUT_VALUE = 'input.value';
 
     public const INPUT_MIME_TYPE = 'input.mime_type';
