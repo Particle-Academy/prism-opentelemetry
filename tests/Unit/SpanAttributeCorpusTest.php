@@ -18,7 +18,10 @@ use Prism\Prism\Events\Telemetry\GenerationCompleted;
 use Prism\Prism\Events\Telemetry\GenerationFailed;
 use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
+use Prism\Prism\Schema\RawSchema;
 use Prism\Prism\Telemetry\TelemetryContext;
+use Prism\Prism\Tool;
+use Prism\Prism\ValueObjects\AdvertisedTool;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
 
@@ -115,6 +118,39 @@ function corpusRateLimitAttributes(string $caseId, string $language): array
 }
 
 /** @return array<int, array<string, mixed>> */
+/**
+ * The tools a row advertises, as the reference's own value objects.
+ *
+ * A row carries each tool's DECLARATION and never its digest, so
+ * `AdvertisedTool::from()` fingerprints it here exactly as it would in an
+ * application. That is what makes the digest a COMPARED value rather than a
+ * copied one — and it is the assertion that caught prism#58, where the
+ * reference hashed an empty parameter map as `[]` and neither port could
+ * reproduce it.
+ *
+ * @param  array<int, array<string, mixed>>|null  $tools
+ * @return list<AdvertisedTool>
+ */
+function corpusAdvertisedTools(?array $tools): array
+{
+    if ($tools === null) {
+        return [];
+    }
+
+    return array_values(array_map(
+        function (array $tool): AdvertisedTool {
+            $built = (new Tool)->as($tool['name'])->for($tool['description'] ?? '');
+
+            foreach ($tool['parameters'] ?? [] as $name => $schema) {
+                $built->withParameter(new RawSchema($name, $schema));
+            }
+
+            return AdvertisedTool::from($built);
+        },
+        $tools,
+    ));
+}
+
 function spanAttributeCorpus(): array
 {
     /** @var array{cases: array<int, array<string, mixed>>} $document */
@@ -158,15 +194,25 @@ function rootSpanFor(array $case): array
         sessionId: $generation['session_id'],
     );
 
+    // The cache and reasoning fields are OPTIONAL in the fixture: rows that
+    // predate them carry no such keys, and null is how the bridge is told a
+    // provider reported nothing -- which is not the same as zero.
     $usage = $generation['usage'] === null ? null : new Usage(
         promptTokens: $generation['usage']['prompt_tokens'],
         completionTokens: $generation['usage']['completion_tokens'],
+        cacheWriteInputTokens: $generation['usage']['cache_write_input_tokens'] ?? null,
+        cacheReadInputTokens: $generation['usage']['cache_read_input_tokens'] ?? null,
+        thoughtTokens: $generation['usage']['thought_tokens'] ?? null,
         cost: $generation['usage']['cost'],
     );
 
+    // THE DIGEST IS COMPUTED, NOT COPIED. A row supplies each tool's
+    // DECLARATION and every language fingerprints it itself, which is the only
+    // way this suite can ask whether the three agree about the digest.
     $subscriber->onGenerationStarted(new GenerationStarted(
         $context,
         $generation['input'] === null ? null : new CorpusPayload($generation['input']),
+        corpusAdvertisedTools($generation['tools'] ?? null),
     ));
 
     $subscriber->onGenerationCompleted(new GenerationCompleted(
@@ -190,7 +236,7 @@ function rootSpanFor(array $case): array
 }
 
 it('is the whole suite, not a subset someone trimmed to green', function (): void {
-    expect(spanAttributeCorpus())->toHaveCount(18);
+    expect(spanAttributeCorpus())->toHaveCount(23);
 });
 
 it('still emits the recorded reference span', function (array $case): void {
