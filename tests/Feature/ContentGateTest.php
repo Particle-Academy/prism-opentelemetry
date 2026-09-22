@@ -199,3 +199,77 @@ function requestWithAnImage(): object
         }
     };
 }
+
+it('counts cached prompt tokens as input, and breaks them out', function (): void {
+    // prism-opentelemetry#1, reported by a consumer running Phoenix against a
+    // cached Anthropic workload. `Usage` carries five token fields and only two
+    // were exported, so `cacheReadInputTokens`, `cacheWriteInputTokens` and
+    // `thoughtTokens` left no trace at all.
+    //
+    // The numbers are theirs: a turn where 35,600 tokens went in and the span
+    // said 922. A cost view reading that under-reports by about 97% on exactly
+    // the workload prompt caching exists for -- and it does so QUIETLY, because
+    // 922 is a perfectly plausible number for a short question.
+    config()->set('prism.telemetry.capture_content', false);
+
+    [$exporter] = composedHarness();
+
+    $usage = new Usage(
+        promptTokens: 922,
+        completionTokens: 210,
+        cacheWriteInputTokens: 0,
+        cacheReadInputTokens: 34_678,
+        thoughtTokens: 64,
+    );
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, $usage);
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    expect($attributes)->toMatchArray([
+        // BOTH conventions define their input count as the whole prompt side,
+        // cache included. Prism's `promptTokens` excludes it. 922 + 34,678.
+        GenAiAttributes::USAGE_INPUT_TOKENS => 35_600,
+        GenAiAttributes::USAGE_OUTPUT_TOKENS => 210,
+        GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS => 34_678,
+        GenAiAttributes::USAGE_CACHE_WRITE_INPUT_TOKENS => 0,
+        GenAiAttributes::USAGE_REASONING_OUTPUT_TOKENS => 64,
+
+        // The sub-counts are already inside the prompt, by OpenInference's own
+        // wording, so the total is prompt + completion and nothing is counted
+        // twice. It was 1,132 before -- the attribute a cost view reads first.
+        OpenInferenceAttributes::TOKEN_COUNT_PROMPT => 35_600,
+        OpenInferenceAttributes::TOKEN_COUNT_COMPLETION => 210,
+        OpenInferenceAttributes::TOKEN_COUNT_TOTAL => 35_810,
+        OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ => 34_678,
+        OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE => 0,
+        OpenInferenceAttributes::TOKEN_COUNT_COMPLETION_DETAILS_REASONING => 64,
+    ]);
+});
+
+it('leaves the cache attributes off a provider that reports none', function (): void {
+    // The control, and it is not cosmetic. Emitting 0 for an unreported field
+    // would make "this provider has no prompt caching" indistinguishable from
+    // "the cache never hit", which is a question somebody reads these to answer.
+    // It also keeps every existing corpus row byte-identical: a turn with no
+    // cache still exports exactly the five attributes it always did.
+    config()->set('prism.telemetry.capture_content', false);
+
+    [$exporter] = composedHarness();
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
+
+    $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
+
+    expect($attributes)
+        ->toMatchArray([
+            GenAiAttributes::USAGE_INPUT_TOKENS => 10,
+            OpenInferenceAttributes::TOKEN_COUNT_PROMPT => 10,
+            OpenInferenceAttributes::TOKEN_COUNT_TOTAL => 15,
+        ])
+        ->and($attributes)->not->toHaveKey(GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS)
+        ->and($attributes)->not->toHaveKey(GenAiAttributes::USAGE_REASONING_OUTPUT_TOKENS)
+        ->and($attributes)->not->toHaveKey(OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ);
+});

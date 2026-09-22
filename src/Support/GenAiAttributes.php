@@ -21,9 +21,51 @@ final class GenAiAttributes
 
     public const RESPONSE_FINISH_REASONS = 'gen_ai.response.finish_reasons';
 
+    /**
+     * INCLUDES CACHED TOKENS, by the convention's own wording: "This value
+     * SHOULD include all types of input tokens, including cached tokens."
+     *
+     * Prism's `Usage` is the other way round — `promptTokens` is normalised to
+     * EXCLUDE them, and the OpenAI handler subtracts `cached_tokens` from
+     * `input_tokens` to make that true. So this attribute is not
+     * `$usage->promptTokens`; it is that plus the two cache counts, and it was
+     * wrong here on every cached request until it was.
+     */
     public const USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 
+    /**
+     * Includes reasoning tokens, which Prism's `completionTokens` already does
+     * — providers report `output_tokens` inclusive of thinking, and Prism does
+     * not subtract it. Nothing to reconcile on this one.
+     */
     public const USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
+
+    /**
+     * The cache and reasoning breakdowns.
+     *
+     * Checked 2026-09-21 against the LIVE registry, which is now
+     * `open-telemetry/semantic-conventions-genai` — the `gen_ai.*` attributes
+     * MOVED there and every one of them reads "deprecated" in the original
+     * `semantic-conventions` repo. That badge describes the move, not a
+     * rename: `gen_ai.usage.input_tokens` above is still the current name.
+     *
+     * The move matters for one of these. The old page spells cache writes
+     * `gen_ai.usage.cache_creation.input_tokens`; the live registry spells it
+     * `cache_write` and carries no `cache_creation` at all. Taking the first
+     * page at its word would have emitted an attribute no backend is looking
+     * for — present in the span, invisible on the dashboard, and indexed under
+     * a name that means nothing.
+     *
+     * All three are stability "Development", so they can still move. That is a
+     * reason to record the date they were checked, not a reason to invent our
+     * own names: a consumer aggregating across instrumentations needs the
+     * spelling everyone else uses.
+     */
+    public const USAGE_CACHE_READ_INPUT_TOKENS = 'gen_ai.usage.cache_read.input_tokens';
+
+    public const USAGE_CACHE_WRITE_INPUT_TOKENS = 'gen_ai.usage.cache_write.input_tokens';
+
+    public const USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens';
 
     public const TOOL_NAME = 'gen_ai.tool.name';
 

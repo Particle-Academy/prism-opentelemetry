@@ -38,6 +38,26 @@ final class OpenInferenceAttributes
 
     public const TOKEN_COUNT_TOTAL = 'llm.token_count.total';
 
+    /**
+     * The breakdowns, which are SUB-COUNTS rather than additions.
+     *
+     * The spec is explicit: "The prompt_details.* values are sub-counts of
+     * llm.token_count.prompt: they are already included in it." That is the
+     * opposite of how Prism's `Usage` carries them — `promptTokens` excludes
+     * the cache counts — so {@see self::TOKEN_COUNT_PROMPT} has to be the SUM
+     * before these are emitted beside it. Emitting Prism's number unchanged
+     * would publish a part larger than its whole: on a cached Anthropic turn,
+     * a prompt of 922 with a cache_read of 34,678 inside it.
+     *
+     * Checked 2026-09-21 against Arize-ai/openinference's
+     * `spec/semantic_conventions.md`.
+     */
+    public const TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ = 'llm.token_count.prompt_details.cache_read';
+
+    public const TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE = 'llm.token_count.prompt_details.cache_write';
+
+    public const TOKEN_COUNT_COMPLETION_DETAILS_REASONING = 'llm.token_count.completion_details.reasoning';
+
     public const INPUT_VALUE = 'input.value';
 
     public const INPUT_MIME_TYPE = 'input.mime_type';

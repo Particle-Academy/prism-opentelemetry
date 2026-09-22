@@ -306,12 +306,50 @@ class TelemetrySubscriber
             return;
         }
 
-        $span->setAttribute(GenAiAttributes::USAGE_INPUT_TOKENS, $usage->promptTokens);
+        $span->setAttribute(GenAiAttributes::USAGE_INPUT_TOKENS, $this->inputTokens($usage));
         $span->setAttribute(GenAiAttributes::USAGE_OUTPUT_TOKENS, $usage->completionTokens);
+
+        // Only when the provider reported them. A null is "this provider does
+        // not tell us", and publishing it as 0 would make a model with no
+        // prompt caching indistinguishable from one whose cache never hit —
+        // which is a question somebody reads these attributes to answer.
+        if ($usage->cacheReadInputTokens !== null) {
+            $span->setAttribute(GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS, $usage->cacheReadInputTokens);
+        }
+
+        if ($usage->cacheWriteInputTokens !== null) {
+            $span->setAttribute(GenAiAttributes::USAGE_CACHE_WRITE_INPUT_TOKENS, $usage->cacheWriteInputTokens);
+        }
+
+        if ($usage->thoughtTokens !== null) {
+            $span->setAttribute(GenAiAttributes::USAGE_REASONING_OUTPUT_TOKENS, $usage->thoughtTokens);
+        }
 
         if ($usage->cost !== null) {
             $span->setAttribute(GenAiAttributes::USAGE_COST, $usage->cost);
         }
+    }
+
+    /**
+     * Every token that went IN, which is not what Prism's `promptTokens` is.
+     *
+     * Prism normalises the field to exclude cache traffic — the OpenAI handler
+     * subtracts `input_tokens_details.cached_tokens` outright, and Anthropic
+     * reports it separately to begin with. Both conventions this package emits
+     * define their input count the other way, as the whole prompt side with the
+     * cache counts already inside it.
+     *
+     * So the reconciliation happens here, once, and the two callers agree by
+     * construction. Getting it wrong is not a rounding error: a cached
+     * Anthropic turn reports 922 input tokens where 35,600 went in, and a cost
+     * view built on that under-reports by about 97% on exactly the workload
+     * caching exists for.
+     */
+    protected function inputTokens(Usage $usage): int
+    {
+        return $usage->promptTokens
+            + ($usage->cacheReadInputTokens ?? 0)
+            + ($usage->cacheWriteInputTokens ?? 0);
     }
 
     /**
@@ -431,9 +469,39 @@ class TelemetrySubscriber
             return;
         }
 
-        $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_PROMPT, $usage->promptTokens);
+        $prompt = $this->inputTokens($usage);
+
+        $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_PROMPT, $prompt);
         $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_COMPLETION, $usage->completionTokens);
-        $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_TOTAL, $usage->promptTokens + $usage->completionTokens);
+
+        // Derived from the RECONCILED prompt, not from Prism's raw field. The
+        // total was previously the sum of the two mapped counts, so it inherited
+        // the cache gap and compounded it — the one attribute a cost view is
+        // most likely to read, and the one furthest from the truth.
+        $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_TOTAL, $prompt + $usage->completionTokens);
+
+        // Sub-counts of the prompt, by the spec's own wording. Absent when the
+        // provider did not report them, for the same reason as the gen_ai side.
+        if ($usage->cacheReadInputTokens !== null) {
+            $span->setAttribute(
+                OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ,
+                $usage->cacheReadInputTokens,
+            );
+        }
+
+        if ($usage->cacheWriteInputTokens !== null) {
+            $span->setAttribute(
+                OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE,
+                $usage->cacheWriteInputTokens,
+            );
+        }
+
+        if ($usage->thoughtTokens !== null) {
+            $span->setAttribute(
+                OpenInferenceAttributes::TOKEN_COUNT_COMPLETION_DETAILS_REASONING,
+                $usage->thoughtTokens,
+            );
+        }
     }
 
     protected function applyInput(SpanInterface $span, mixed $request): void
