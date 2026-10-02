@@ -61,6 +61,17 @@ jobs:
       - name: List installed dependencies
         run: composer show -D
 
+      # NOTHING IN THIS ESTATE HAD EVER AUDITED A PHP DEPENDENCY. Where
+      # composer.lock is gitignored -- correct for a library, since consumers
+      # resolve their own -- Dependabot has no lock to scan, so it reported zero
+      # open alerts. That zero was never a measurement: the first audit ever run
+      # found the same Laravel advisory in eight of ten PHP repositories.
+      #
+      # Runs after the install so it audits what CI actually RESOLVED, and before
+      # the tests so a vulnerable tree fails the run rather than passing quietly.
+      - name: Audit dependencies for known advisories
+        run: composer audit --no-interaction
+
       - name: Execute tests
         run: vendor/bin/pest
 
