@@ -23,6 +23,7 @@ use Prism\Prism\Events\Telemetry\GenerationStarted;
 use Prism\Prism\Events\Telemetry\StepCompleted;
 use Prism\Prism\Events\Telemetry\ToolInvoked;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
+use Prism\Prism\Telemetry\TelemetryContext;
 use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\AdvertisedTool;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
@@ -38,6 +39,8 @@ use Throwable;
  */
 class TelemetrySubscriber
 {
+    protected const STREAM_ERROR_EVENT = 'Prism\\Prism\\Events\\Telemetry\\GenerationErrored';
+
     /**
      * At most this many tools reach a span.
      *
@@ -82,6 +85,9 @@ class TelemetrySubscriber
         $events->listen(ToolInvoked::class, [$this, 'onToolInvoked']);
         $events->listen(GenerationCompleted::class, [$this, 'onGenerationCompleted']);
         $events->listen(GenerationFailed::class, [$this, 'onGenerationFailed']);
+        if (class_exists(self::STREAM_ERROR_EVENT)) {
+            $events->listen(self::STREAM_ERROR_EVENT, [$this, 'onGenerationErrored']);
+        }
     }
 
     public function onGenerationStarted(GenerationStarted $event): void
@@ -294,6 +300,10 @@ class TelemetrySubscriber
         // limited generation has no response for them to travel on, but
         // PrismRateLimitedException carries them itself.
         $this->applyRateLimits($span, $this->rateLimitsOfException($event->exception));
+        $failureUsage = get_object_vars($event)['failureUsage'] ?? null;
+        if (is_object($failureUsage)) {
+            $this->applyProvisionalUsage($span, $failureUsage);
+        }
 
         $span->setStatus(StatusCode::STATUS_ERROR, $event->exception->getMessage());
 
@@ -311,9 +321,92 @@ class TelemetrySubscriber
         $this->store->forget($event->context->traceId);
     }
 
-    /**
-     * Create a span for a buffered tool call under the given parent context.
-     */
+    /** The event class is optional until the application installs core 0.146. */
+    public function onGenerationErrored(object $event): void
+    {
+        $eventClass = self::STREAM_ERROR_EVENT;
+        if (! class_exists($eventClass) || ! $event instanceof $eventClass) {
+            return;
+        }
+        $data = get_object_vars($event);
+        $context = $data['context'] ?? null;
+        if (! $context instanceof TelemetryContext) {
+            return;
+        }
+        $span = $this->store->span($context->traceId);
+        if (! $span instanceof SpanInterface) {
+            return;
+        }
+        $this->flushRemainingTools($context->traceId);
+        $this->applyFinishReason($span, FinishReason::Error);
+        $span->setStatus(StatusCode::STATUS_ERROR, 'The provider stream failed.');
+        if (is_object($data['failureUsage'] ?? null)) {
+            $this->applyProvisionalUsage($span, $data['failureUsage']);
+        }
+        $this->writeHeldTools($span, $context->traceId);
+        $span->end($this->nowNanos());
+        $this->store->forget($context->traceId);
+    }
+
+    protected function applyProvisionalUsage(SpanInterface $span, object $failure): void
+    {
+        $report = get_object_vars($failure);
+        $usage = $report['usage'] ?? null;
+        $fields = $report['reportedFields'] ?? null;
+        if (! $usage instanceof Usage || ! is_array($fields)) {
+            return;
+        }
+        $values = $usage->toArray();
+        $fields = array_values(array_intersect(array_keys($values), array_filter($fields, is_string(...))));
+        $span->setAttribute('prism.usage.status', 'provisional');
+        $span->setAttribute('prism.usage.scope', 'attempt');
+        $span->setAttribute('prism.usage.includes_completed_steps', false);
+        $span->setAttribute('prism.usage.reported_fields', $fields);
+        if (is_int($report['stepIndex'] ?? null) && $report['stepIndex'] >= 0) {
+            $span->setAttribute('prism.usage.step_index', $report['stepIndex']);
+        }
+        $input = null;
+        if (in_array('prompt_tokens', $fields, true) && $usage->promptTokens >= 0) {
+            $input = $usage->promptTokens;
+            foreach (['cache_read_input_tokens', 'cache_write_input_tokens'] as $field) {
+                $extra = in_array($field, $fields, true) ? ($values[$field] ?? 0) : 0;
+                if (! is_int($extra) || $extra < 0 || $input > PHP_INT_MAX - $extra) {
+                    $input = null;
+                    break;
+                }
+                $input += $extra;
+            }
+            if ($input !== null) {
+                $span->setAttribute(GenAiAttributes::USAGE_INPUT_TOKENS, $input);
+                $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_PROMPT, $input);
+            }
+        }
+        $output = in_array('completion_tokens', $fields, true) && $usage->completionTokens >= 0 ? $usage->completionTokens : null;
+        if ($output !== null) {
+            $span->setAttribute(GenAiAttributes::USAGE_OUTPUT_TOKENS, $output);
+            $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_COMPLETION, $output);
+        }
+        if ($input !== null && $output !== null && $input <= PHP_INT_MAX - $output) {
+            $span->setAttribute(OpenInferenceAttributes::TOKEN_COUNT_TOTAL, $input + $output);
+        }
+        foreach ([
+            'cache_read_input_tokens' => [GenAiAttributes::USAGE_CACHE_READ_INPUT_TOKENS, OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ],
+            'cache_write_input_tokens' => [GenAiAttributes::USAGE_CACHE_WRITE_INPUT_TOKENS, OpenInferenceAttributes::TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE],
+            'thought_tokens' => [GenAiAttributes::USAGE_REASONING_OUTPUT_TOKENS, OpenInferenceAttributes::TOKEN_COUNT_COMPLETION_DETAILS_REASONING],
+            'cost' => [GenAiAttributes::USAGE_COST],
+            'cache_write_5m_input_tokens' => ['prism.usage.cache_write_5m_input_tokens'],
+            'cache_write_1h_input_tokens' => ['prism.usage.cache_write_1h_input_tokens'],
+        ] as $field => $attributes) {
+            $value = $values[$field] ?? null;
+            if (in_array($field, $fields, true) && (is_int($value) || is_float($value)) && is_finite((float) $value) && $value >= 0) {
+                foreach ($attributes as $attribute) {
+                    $span->setAttribute($attribute, $value);
+                }
+            }
+        }
+    }
+
+    /** Create a span for a buffered tool call under the given parent context. */
     protected function emitToolSpan(PendingTool $tool, ContextInterface $parent): void
     {
         $span = $this->tracer

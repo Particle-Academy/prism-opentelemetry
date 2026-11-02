@@ -7,13 +7,10 @@ a root span per generation, child spans per step and per tool call, with token,
 cost, model, finish-reason and provider rate-limit attributes — exported over OTLP to
 [Arize Phoenix](https://github.com/Arize-ai/phoenix) or any OTLP backend.
 
-> **Status: under active development, and this release needs an unreleased
-> Prism.** The bridge reads the provider rate limits off
-> `GenerationCompleted::$rateLimits`, which core gained after v0.115.1, so the
-> constraint is `>=0.116 <1.0` and `composer install` stays red until Prism
-> v0.116.0 is tagged. The field exists because quota headroom is not content:
-> before it, a successful generation exported no rate limits at all unless the
-> application had turned prompt capture on.
+The bridge supports Prism `>=0.124.1 <1.0`. With core 0.146 or later it also
+subscribes to `GenerationErrored`, so an event-signalled stream failure closes
+the root span with error status. Registration is guarded when older core versions
+do not provide that event.
 
 > **Working on this package?** Read **[`AGENTS.md`](AGENTS.md)** first — the boundary
 > this package has to hold, the gates that must be green, and the traps that have
@@ -29,6 +26,7 @@ Events\Telemetry\GenerationStarted     builds root span              Arize Phoen
                  \ToolInvoked          + child tool spans            Grafana, …
                  \GenerationCompleted  ends the root span
                  \GenerationFailed     ends w/ error status
+                 \GenerationErrored    ends event-signalled failures (core 0.146+)
 ```
 
 Prism core never depends on OpenTelemetry. This package owns the
@@ -61,6 +59,17 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:6006   # Phoenix OTLP endpoint
 ```
 
 ## Configuration
+
+Failed-stream usage is provisional and covers one provider attempt, excluding
+completed steps. `prism.usage.status`, `prism.usage.scope`,
+`prism.usage.step_index`, `prism.usage.reported_fields` and
+`prism.usage.includes_completed_steps` identify that scope. Only reported numeric
+fields are exported; a missing field stays absent and an explicit zero stays zero.
+Cache lifetime counts use `prism.usage.cache_write_5m_input_tokens` and
+`prism.usage.cache_write_1h_input_tokens`. Numeric usage does not require content
+capture. The new error event exports no prompt, generated content, raw provider
+diagnostic or invented exception. A subsequent failure event for the same trace
+does not create or end a second span.
 
 ```bash
 php artisan vendor:publish --tag=prism-opentelemetry-config
