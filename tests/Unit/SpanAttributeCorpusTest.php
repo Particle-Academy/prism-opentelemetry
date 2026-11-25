@@ -390,7 +390,7 @@ it('exports the rate limits a rate-limited generation FAILED with', function ():
     // showed up exactly when it was too late to act on them.
     $exporter = new InMemoryExporter;
     $sub = new TelemetrySubscriber((new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('prism-parity'), new SpanStore);
-    $ctx = new TelemetryContext('rate-limited', TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 0.0);
+    $ctx = new TelemetryContext('rate-limited', TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 0.0);
 
     $sub->onGenerationStarted(new GenerationStarted($ctx));
     $sub->onGenerationFailed(new GenerationFailed($ctx, 5.0, PrismRateLimitedException::make([

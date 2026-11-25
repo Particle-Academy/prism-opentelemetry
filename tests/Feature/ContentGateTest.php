@@ -57,7 +57,7 @@ function composedResponse(): TextResponseFake
         ->withText('the completion nobody asked to export')
         ->withFinishReason(FinishReason::Stop)
         ->withUsage(new Usage(10, 5))
-        ->withMeta(new Meta('resp-1', 'claude-sonnet-4-5', rateLimits: [
+        ->withMeta(new Meta('resp-1', 'claude-sonnet-5-5', rateLimits: [
             new ProviderRateLimit('requests', limit: 1000, remaining: 999, resetsAt: Carbon::createFromTimestamp(1788611696)),
         ]));
 }
@@ -75,7 +75,7 @@ it('exports quota headroom on a SUCCESSFUL span with content capture OFF', funct
 
     [$exporter] = composedHarness();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt with a secret in it');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt with a secret in it');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
@@ -97,7 +97,7 @@ it('still withholds the content on that same span', function (): void {
 
     [$exporter] = composedHarness();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt with a secret in it');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt with a secret in it');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
@@ -116,7 +116,7 @@ it('exports both when the application has opted into content capture', function 
 
     [$exporter] = composedHarness();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt with a secret in it');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt with a secret in it');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
@@ -137,7 +137,7 @@ describe('media inside captured content', function (): void {
 
         $request = requestWithAnImage();
 
-        $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', $request);
+        $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', $request);
         Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
         return (string) ($exporter->getSpans()[0]->getAttributes()->toArray()[OpenInferenceAttributes::INPUT_VALUE] ?? '');
@@ -179,7 +179,7 @@ function capturedInputWithMedia(): string
 
     $request = requestWithAnImage();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', $request);
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', $request);
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     return (string) ($exporter->getSpans()[0]->getAttributes()->toArray()[OpenInferenceAttributes::INPUT_VALUE] ?? '');
@@ -224,7 +224,7 @@ it('counts cached prompt tokens as input, and breaks them out', function (): voi
         thoughtTokens: 64,
     );
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, $usage);
 
     $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
@@ -260,7 +260,7 @@ it('leaves the cache attributes off a provider that reports none', function (): 
 
     [$exporter] = composedHarness();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     $attributes = $exporter->getSpans()[0]->getAttributes()->toArray();
@@ -293,8 +293,8 @@ it('exports the tool set with content capture OFF, which is where it is needed',
     $context = Telemetry::start(
         TelemetryOperation::Text,
         'anthropic',
-        'claude-sonnet-4-5',
-        new Request(model: 'claude-sonnet-4-5', tools: [
+        'claude-sonnet-5-5',
+        new Request(model: 'claude-sonnet-5-5', tools: [
             (new Tool)->as('search')->for('Search the docs')->using(fn (): string => 'ok'),
             (new Tool)->as('write')->for('Write a file')->using(fn (): string => 'ok'),
         ]),
@@ -332,8 +332,8 @@ it('keeps the tools in the order they were sent, because a reorder is a cache mi
     $context = Telemetry::start(
         TelemetryOperation::Text,
         'anthropic',
-        'claude-sonnet-4-5',
-        new Request(model: 'claude-sonnet-4-5', tools: [
+        'claude-sonnet-5-5',
+        new Request(model: 'claude-sonnet-5-5', tools: [
             (new Tool)->as('zebra')->for('Last alphabetically, first in the array')->using(fn (): string => 'ok'),
             (new Tool)->as('alpha')->for('First alphabetically, last in the array')->using(fn (): string => 'ok'),
         ]),
@@ -360,8 +360,8 @@ it('adds the definitions only when capture is ON', function (): void {
     $context = Telemetry::start(
         TelemetryOperation::Text,
         'anthropic',
-        'claude-sonnet-4-5',
-        new Request(model: 'claude-sonnet-4-5', tools: [
+        'claude-sonnet-5-5',
+        new Request(model: 'claude-sonnet-5-5', tools: [
             (new Tool)->as('search')->for('Search the docs')->using(fn (): string => 'ok'),
         ]),
     );
@@ -385,7 +385,7 @@ it('writes no tool attributes for a generation with no tools', function (): void
 
     [$exporter] = composedHarness();
 
-    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-4-5', 'a prompt');
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(10, 5));
 
     $written = array_keys($exporter->getSpans()[0]->getAttributes()->toArray());
@@ -427,8 +427,8 @@ it('keeps usage and finish reason on a span offering many tools', function (): v
     $context = Telemetry::start(
         TelemetryOperation::Text,
         'anthropic',
-        'claude-sonnet-4-5',
-        new Request(model: 'claude-sonnet-4-5', tools: $tools),
+        'claude-sonnet-5-5',
+        new Request(model: 'claude-sonnet-5-5', tools: $tools),
     );
     Telemetry::completed($context, composedResponse(), FinishReason::Stop, new Usage(922, 210, cacheReadInputTokens: 34_678));
 
