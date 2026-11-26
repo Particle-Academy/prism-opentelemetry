@@ -139,7 +139,8 @@ it('names an anonymous exception class without the file path PHP appends to it',
 
     expect($type)->toBe('RuntimeException@anonymous')
         ->and(exportedText($span))->not->toContain(EXCEPTION_MARKER)
-        ->and(exportedText($span))->not->toContain(__FILE__);
+        ->and(exportedText($span))->not->toContain(trim((string) json_encode(__FILE__, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), '"'))
+        ->and(exportedText($span))->not->toContain(basename(__FILE__));
 });
 
 it('defaults to capture OFF when the subscriber is built by hand', function (): void {
@@ -226,4 +227,48 @@ it('writes no frame arguments into a captured stack trace', function (): void {
     expect($stacktrace)->toContain('RuntimeException: a failure')
         ->and($stacktrace)->toContain('ExceptionContentGateTest.php')
         ->and($stacktrace)->not->toContain(EXCEPTION_MARKER);
+});
+
+it('follows the switch turned ON at runtime too', function (): void {
+    config()->set('prism.telemetry.enabled', true);
+    config()->set('prism.telemetry.capture_content', false);
+
+    $exporter = new InMemoryExporter;
+    app()->instance(TracerInterface::class, (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('runtime-on'));
+    app()->instance(SpanStore::class, new SpanStore);
+    app()->forgetInstance(TelemetrySubscriber::class);
+    app(Dispatcher::class)->subscribe(TelemetrySubscriber::class);
+
+    config()->set('prism.telemetry.capture_content', true);
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
+    Telemetry::failed($context, new RuntimeException(EXCEPTION_MARKER));
+
+    expect(exportedText($exporter->getSpans()[0]))->toContain(EXCEPTION_MARKER);
+});
+
+it('lists at most sixteen exceptions of a chain in a captured stack trace', function (): void {
+    $exporter = new InMemoryExporter;
+    $subscriber = new TelemetrySubscriber(
+        (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('chain'),
+        new SpanStore,
+        maxContentLength: 0,
+        captureContent: true,
+    );
+    config()->set('prism.telemetry.enabled', true);
+    app(Dispatcher::class)->subscribe($subscriber);
+
+    $exception = new RuntimeException('link 0');
+    for ($i = 1; $i <= 20; $i++) {
+        $exception = new RuntimeException("link {$i}", 0, $exception);
+    }
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
+    Telemetry::failed($context, $exception);
+
+    $stacktrace = $exporter->getSpans()[0]->getEvents()[0]->getAttributes()->toArray()['exception.stacktrace'];
+
+    expect(substr_count($stacktrace, 'Caused by: '))->toBe(15)
+        ->and($stacktrace)->toContain('link 20')
+        ->and($stacktrace)->not->toContain('link 4:');
 });

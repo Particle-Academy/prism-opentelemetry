@@ -410,32 +410,37 @@ class TelemetrySubscriber
      * Built rather than taken from `getTraceAsString()`, which includes each
      * frame's ARGUMENTS unless `zend.exception_ignore_args` is on, and arguments
      * are exactly the content this gate exists for. A frame here is its class,
-     * function, file and line. Previous exceptions follow as `Caused by:`,
-     * at most 16 deep and never twice.
+     * function, file and line, after the line the exception was thrown on.
+     * Previous exceptions follow as `Caused by:`, at most 16 deep and never
+     * twice. Building stops once the text passes `content_max_length`, which
+     * cuts it anyway.
      */
     protected function stackTrace(Throwable $exception): string
     {
-        $lines = [];
+        $text = '';
         $seen = [];
+        $limit = $this->maxContentLength;
 
-        for ($current = $exception, $depth = 0; $current instanceof Throwable && $depth < 16; $current = $current->getPrevious(), $depth++) {
+        for ($current = $exception, $depth = 0; $current instanceof Throwable && $depth < 16 && ($limit <= 0 || strlen($text) <= $limit); $current = $current->getPrevious(), $depth++) {
             if (isset($seen[spl_object_id($current)])) {
                 break;
             }
             $seen[spl_object_id($current)] = true;
 
-            $lines[] = ($depth === 0 ? '' : 'Caused by: ').$this->exceptionType($current).': '.$current->getMessage();
+            $text .= ($text === '' ? '' : "\n").($depth === 0 ? '' : 'Caused by: ').$this->exceptionType($current).': '.$current->getMessage();
+            $text .= "\n\tthrown at ".$current->getFile().':'.$current->getLine();
 
             foreach ($current->getTrace() as $frame) {
+                if ($limit > 0 && strlen($text) > $limit) {
+                    break;
+                }
                 $function = (isset($frame['class']) ? $frame['class'].'.' : '').$frame['function'];
                 $location = isset($frame['file']) ? $frame['file'].':'.($frame['line'] ?? 0) : 'Unknown Source';
-                $lines[] = "\tat ".$function.'('.$location.')';
+                $text .= "\n\tat ".$function.'('.$location.')';
             }
-
-            $lines[] = "\tat {main}(".$current->getFile().':'.$current->getLine().')';
         }
 
-        return implode("\n", $lines);
+        return $text;
     }
 
     /** The event class is optional until the application installs core 0.146. */
