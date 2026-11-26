@@ -197,8 +197,28 @@ it('marks the root span as error on failure and records the exception', function
     $spans = $exporter->getSpans();
     expect($spans)->toHaveCount(1);
     expect($spans[0]->getStatus()->getCode())->toBe(StatusCode::STATUS_ERROR);
-    expect($spans[0]->getStatus()->getDescription())->toBe('boom');
-    expect($spans[0]->getEvents())->not->toBeEmpty(); // exception recorded as a span event
+    // Capture is off by default, so the description is fixed text and the
+    // event names the class only. See Feature/ExceptionContentGateTest.
+    expect($spans[0]->getStatus()->getDescription())->toBe(TelemetrySubscriber::FAILED_DESCRIPTION);
+    expect($spans[0]->getEvents())->toHaveCount(1);
+    expect($spans[0]->getEvents()[0]->getAttributes()->toArray())->toBe(['exception.type' => RuntimeException::class]);
+});
+
+it('puts the exception message on the span when content capture is on', function (): void {
+    $exporter = new InMemoryExporter;
+    $sub = new TelemetrySubscriber(
+        (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('test'),
+        new SpanStore,
+        captureContent: true,
+    );
+    $ctx = context('t3-capture');
+
+    $sub->onGenerationStarted(new GenerationStarted($ctx));
+    $sub->onGenerationFailed(new GenerationFailed($ctx, 5.0, new RuntimeException('boom')));
+
+    $span = $exporter->getSpans()[0];
+    expect($span->getStatus()->getDescription())->toBe('boom');
+    expect($span->getEvents()[0]->getAttributes()->toArray()['exception.message'])->toBe('boom');
 });
 
 it('omits the exception event when record_exceptions is disabled', function (): void {

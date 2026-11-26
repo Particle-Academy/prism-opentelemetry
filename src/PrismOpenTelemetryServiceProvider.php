@@ -29,7 +29,14 @@ class PrismOpenTelemetryServiceProvider extends ServiceProvider
             // Prism's own switch, beside `capture_content`, so one setting
             // decides for core and for this bridge. Absent before prism
             // v0.121.0, which reads as off.
-            (bool) config('prism.telemetry.capture_media', false),
+            // Read on every use, not once here: core reads both keys on every
+            // event, so a switch an application changes at runtime must mean
+            // the same thing to both.
+            fn (): bool => (bool) config('prism.telemetry.capture_media', false),
+            // Core's content switch. Core gates requests, responses and tool
+            // arguments itself; the bridge reads it for the one thing core
+            // passes through ungated: the exception on a failed generation.
+            fn (): bool => (bool) config('prism.telemetry.capture_content', false),
         ));
     }
 

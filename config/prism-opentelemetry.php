@@ -10,7 +10,9 @@ return [
     // Instrumentation scope name used when obtaining the tracer.
     'tracer_name' => env('PRISM_OTEL_TRACER_NAME', 'prism'),
 
-    // Record the thrown exception on the span when a generation fails.
+    // Add an `exception` event to the span when a generation fails. Its message
+    // and stack trace are included only when `prism.telemetry.capture_content`
+    // is on; otherwise the event carries the exception's class name alone.
     'record_exceptions' => env('PRISM_OTEL_RECORD_EXCEPTIONS', true),
 
     // Cap the byte length of any single captured-content span attribute

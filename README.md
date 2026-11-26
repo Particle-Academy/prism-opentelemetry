@@ -79,7 +79,8 @@ php artisan vendor:publish --tag=prism-opentelemetry-config
 | --- | --- | --- | --- |
 | `enabled` | `PRISM_OTEL_ENABLED` | `true` | Subscribe the span-building listener. |
 | `tracer_name` | `PRISM_OTEL_TRACER_NAME` | `prism` | Instrumentation scope name. |
-| `record_exceptions` | `PRISM_OTEL_RECORD_EXCEPTIONS` | `true` | Record the exception on failed spans. |
+| `content_max_length` | `PRISM_OTEL_CONTENT_MAX_LENGTH` | `65536` | Cut each captured-content attribute, including a captured exception's message and stack trace, to this many bytes, followed by a `…[truncated]` marker. `0` disables the cap. |
+| `record_exceptions` | `PRISM_OTEL_RECORD_EXCEPTIONS` | `true` | Add an `exception` event to failed spans. With content capture off it carries only `exception.type`. |
 
 ## Privacy
 
@@ -87,7 +88,22 @@ php artisan vendor:publish --tag=prism-opentelemetry-config
 and provider rate limits. Prompts, completions, tool arguments and tool results
 are added as `input.value` / `output.value` **only when Prism's
 `prism.telemetry.capture_content` is on**, and it is off by default. Each
-captured attribute is cut to `content_max_length`.
+captured attribute is cut to `prism-opentelemetry.content_max_length`
+(`PRISM_OTEL_CONTENT_MAX_LENGTH`), the bridge's own key, not core's.
+
+**Exception messages are recorded only when content capture is on.** An
+exception's message can repeat what the application was handling: the row a
+database write tried to insert, or the input a validation error quotes. With
+`prism.telemetry.capture_content` off, a failed generation's span gets the error
+status with the description `The generation failed.`, and its `exception` event
+carries only `exception.type`, the class name. The message, the stack trace and
+any previous exception are not exported. The class name itself is still
+exported, so do not build exception class names from data. With capture on,
+the description, `exception.message` and `exception.stacktrace` are each cut
+to `prism-opentelemetry.content_max_length` (`PRISM_OTEL_CONTENT_MAX_LENGTH`), and the stack trace lists each frame's class,
+function, file and line, never its arguments. The switch is read on every
+failure, so changing `prism.telemetry.capture_content` at runtime applies here
+as it does in core.
 
 **Attachment bytes are withheld even with content capture on.** A captured
 message's images, documents, audio and video keep their kind, mime type, file id
