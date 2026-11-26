@@ -30,6 +30,10 @@ class PrismOpenTelemetryServiceProvider extends ServiceProvider
             // decides for core and for this bridge. Absent before prism
             // v0.121.0, which reads as off.
             (bool) config('prism.telemetry.capture_media', false),
+            // Core's content switch. Core gates requests, responses and tool
+            // arguments itself; the bridge reads it for the one thing core
+            // passes through ungated: the exception on a failed generation.
+            (bool) config('prism.telemetry.capture_content', false),
         ));
     }
 

@@ -6,6 +6,7 @@ namespace Prism\OpenTelemetry\Tests\Unit;
 
 use Carbon\Carbon;
 use Illuminate\Contracts\Support\Arrayable;
+use OpenTelemetry\SDK\Trace\EventInterface;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
 use OpenTelemetry\SDK\Trace\SpanProcessor\SimpleSpanProcessor;
 use OpenTelemetry\SDK\Trace\TracerProvider;
@@ -24,6 +25,7 @@ use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\AdvertisedTool;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\Usage;
+use RuntimeException;
 
 /**
  * The cross-language span-attribute corpus from `prism-parity`.
@@ -182,6 +184,10 @@ function rootSpanFor(array $case): array
         new SpanStore,
         recordExceptions: true,
         maxContentLength: $case['max_content_length'],
+        // As the service provider hands it `prism.telemetry.capture_content`.
+        // It decides how much of a failure reaches the span; the request and
+        // response are gated by core before the bridge sees them (otel-0013).
+        captureContent: $case['capture_content'],
     );
 
     $context = new TelemetryContext(
@@ -215,28 +221,114 @@ function rootSpanFor(array $case): array
         corpusAdvertisedTools($generation['tools'] ?? null),
     ));
 
-    $subscriber->onGenerationCompleted(new GenerationCompleted(
-        $context,
-        0.0,
-        $generation['finish_reason'] === null ? null : FinishReason::from($generation['finish_reason']),
-        $usage,
-        corpusResponse($generation),
-        corpusRateLimits($generation),
-    ));
+    $failure = $generation['failure'] ?? null;
+
+    if ($failure === null) {
+        $subscriber->onGenerationCompleted(new GenerationCompleted(
+            $context,
+            0.0,
+            $generation['finish_reason'] === null ? null : FinishReason::from($generation['finish_reason']),
+            $usage,
+            corpusResponse($generation),
+            corpusRateLimits($generation),
+        ));
+    } else {
+        $subscriber->onGenerationFailed(new GenerationFailed($context, 0.0, new RuntimeException($failure['message'])));
+    }
 
     $spans = $exporter->getSpans();
     $attributes = $spans[0]->getAttributes()->toArray();
     ksort($attributes);
 
-    return [
+    $recorded = [
         'name' => $spans[0]->getName(),
         'status' => strtolower($spans[0]->getStatus()->getCode()),
         'attributes' => $attributes,
     ];
+
+    if ($failure !== null) {
+        $recorded['status_description'] = $spans[0]->getStatus()->getDescription();
+        $recorded['events'] = corpusExceptionEvents($spans[0]->getEvents(), $failure['content_marker']);
+    }
+
+    return $recorded;
+}
+
+/**
+ * The span's events as the corpus records them: every attribute, except that
+ * the stack trace's TEXT, whose frames differ between machines, is recorded as
+ * `present` or `present, carries the content marker`.
+ *
+ * @param  iterable<EventInterface>  $events
+ * @return list<array{name: string, attributes: array<string, mixed>}>
+ */
+function corpusExceptionEvents(iterable $events, string $marker): array
+{
+    $recorded = [];
+
+    foreach ($events as $event) {
+        $attributes = $event->getAttributes()->toArray();
+
+        if (array_key_exists('exception.stacktrace', $attributes)) {
+            $attributes['exception.stacktrace'] = str_contains((string) $attributes['exception.stacktrace'], $marker)
+                ? 'present, carries the content marker'
+                : 'present';
+        }
+
+        ksort($attributes);
+        $recorded[] = ['name' => $event->getName(), 'attributes' => $attributes];
+    }
+
+    return $recorded;
 }
 
 it('is the whole suite, not a subset someone trimmed to green', function (): void {
-    expect(spanAttributeCorpus())->toHaveCount(23);
+    expect(spanAttributeCorpus())->toHaveCount(27);
+});
+
+it('keeps the exception message off a failed span with capture off, in all three languages', function (): void {
+    // otel-0024..0027. An exception's message can repeat content the
+    // application was handling, and core hands it to the bridge whatever
+    // `capture_content` says. This is asserted across the three RECORDED
+    // columns, not just this language's, because a row where every language
+    // leaks agrees perfectly.
+    $failures = collect(spanAttributeCorpus())->filter(fn (array $case): bool => isset($case['generation']['failure']));
+    expect($failures)->toHaveCount(4);
+
+    foreach ($failures as $case) {
+        $marker = $case['generation']['failure']['content_marker'];
+
+        // Vacuity guard: the marker really is in what each bridge was handed.
+        expect($case['generation']['failure']['message'])->toContain($marker);
+
+        foreach (['php', 'ts', 'py'] as $language) {
+            $span = $case['spans'][$language];
+            $exported = (string) json_encode($span, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            expect($span['status'])->toBe('error');
+
+            if ($case['capture_content']) {
+                expect($exported)->toContain($marker);
+
+                continue;
+            }
+
+            expect($exported)->not->toContain($marker)
+                ->and($exported)->not->toContain('carries the content marker')
+                ->and($span['status_description'])->toBe(TelemetrySubscriber::FAILED_DESCRIPTION)
+                ->and($span['events'])->toHaveCount(1)
+                ->and(array_keys($span['events'][0]['attributes']))->toBe(['exception.type']);
+        }
+
+        // This language, live, not only as recorded.
+        $live = (string) json_encode(rootSpanFor($case), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        if ($case['capture_content']) {
+            expect($live)->toContain($marker);
+        } else {
+            expect($live)->not->toContain($marker);
+        }
+    }
 });
 
 it('still emits the recorded reference span', function (array $case): void {

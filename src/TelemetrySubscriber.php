@@ -70,12 +70,31 @@ class TelemetrySubscriber
      */
     protected const MAX_TOOL_NAME_BYTES = 512;
 
+    /**
+     * The status description of a failed generation when content capture is off.
+     *
+     * Fixed text, because the exception's own message is not ours to export: a
+     * failed database write repeats the row it tried to insert, and a provider
+     * error can quote the prompt.
+     */
+    public const FAILED_DESCRIPTION = 'The generation failed.';
+
+    /**
+     * `$captureContent` is the application's `prism.telemetry.capture_content`.
+     *
+     * Core gates the request, the response and tool arguments before they reach
+     * this bridge. It does NOT gate the exception on a failed generation, so the
+     * bridge reads the same switch to decide whether an exception's message and
+     * stack trace may reach a span. Off by default, like core's switch: a
+     * subscriber built by hand records the exception's class and nothing else.
+     */
     public function __construct(
         protected TracerInterface $tracer,
         protected SpanStore $store,
         protected bool $recordExceptions = true,
         protected int $maxContentLength = 65_536,
         protected bool $captureMedia = false,
+        protected bool $captureContent = false,
     ) {}
 
     public function subscribe(Dispatcher $events): void
@@ -305,11 +324,7 @@ class TelemetrySubscriber
             $this->applyProvisionalUsage($span, $failureUsage);
         }
 
-        $span->setStatus(StatusCode::STATUS_ERROR, $event->exception->getMessage());
-
-        if ($this->recordExceptions) {
-            $span->recordException($event->exception);
-        }
+        $this->applyException($span, $event->exception);
 
         // A failed generation carries its tool list too, and for the same
         // reason it goes last: the status, the exception and the quota buckets
@@ -319,6 +334,47 @@ class TelemetrySubscriber
         $span->end($this->nowNanos());
 
         $this->store->forget($event->context->traceId);
+    }
+
+    /**
+     * The failure, as much of it as the content gate allows.
+     *
+     * With capture off a span gets the error status, a fixed description and an
+     * `exception` event carrying only `exception.type`. The message, the stack
+     * trace (whose header lines repeat the message of this exception and of
+     * every previous one) and any previous exception stay in the application.
+     */
+    protected function applyException(SpanInterface $span, Throwable $exception): void
+    {
+        if ($this->captureContent) {
+            $span->setStatus(StatusCode::STATUS_ERROR, $exception->getMessage());
+
+            if ($this->recordExceptions) {
+                $span->recordException($exception);
+            }
+
+            return;
+        }
+
+        $span->setStatus(StatusCode::STATUS_ERROR, self::FAILED_DESCRIPTION);
+
+        if ($this->recordExceptions) {
+            $span->addEvent('exception', ['exception.type' => $this->exceptionType($exception)]);
+        }
+    }
+
+    /**
+     * The exception's class name.
+     *
+     * An anonymous class's name carries a NUL byte followed by the path and
+     * line of the file that declared it; everything from the NUL on is dropped.
+     */
+    protected function exceptionType(Throwable $exception): string
+    {
+        $class = $exception::class;
+        $nul = strpos($class, "\0");
+
+        return $nul === false ? $class : substr($class, 0, $nul);
     }
 
     /** The event class is optional until the application installs core 0.146. */
