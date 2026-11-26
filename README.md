@@ -95,7 +95,13 @@ database write tried to insert, or the input a validation error quotes. With
 `prism.telemetry.capture_content` off, a failed generation's span gets the error
 status with the description `The generation failed.`, and its `exception` event
 carries only `exception.type`, the class name. The message, the stack trace and
-any previous exception are not exported.
+any previous exception are not exported. The class name itself is still
+exported, so do not build exception class names from data. With capture on,
+the description, `exception.message` and `exception.stacktrace` are each cut
+to `content_max_length`, and the stack trace lists each frame's class,
+function, file and line, never its arguments. The switch is read on every
+failure, so changing `prism.telemetry.capture_content` at runtime applies here
+as it does in core.
 
 **Attachment bytes are withheld even with content capture on.** A captured
 message's images, documents, audio and video keep their kind, mime type, file id

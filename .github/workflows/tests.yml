@@ -36,10 +36,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ matrix.php }}
           # No database: this package exports spans, it stores nothing. The
@@ -83,7 +83,7 @@ jobs:
     steps:
       # This job only reads files, so it keeps no token in .git/config for
       # the fetched checker to find.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -94,7 +94,7 @@ jobs:
       # requires this workflow to have succeeded, can only withhold the GitHub
       # release. It cannot withdraw a version.
       - name: Fetch the third-party allowlist
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Particle-Academy/.github
           ref: d368b8173bc81562e0af4035b1cf6fcb207817f9
@@ -170,7 +170,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -181,7 +181,7 @@ jobs:
       # that has already drifted without telling anyone -- prism-parity found 38
       # of 111 hand-maintained copies stale. So it is diffed, not trusted.
       - name: Fetch the canonical checker
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: Particle-Academy/.github
           ref: d368b8173bc81562e0af4035b1cf6fcb207817f9

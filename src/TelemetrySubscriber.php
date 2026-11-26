@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Prism\OpenTelemetry;
 
+use Closure;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Support\Arrayable;
 use OpenTelemetry\API\Trace\SpanInterface;
@@ -87,15 +88,33 @@ class TelemetrySubscriber
      * bridge reads the same switch to decide whether an exception's message and
      * stack trace may reach a span. Off by default, like core's switch: a
      * subscriber built by hand records the exception's class and nothing else.
+     *
+     * Both switches also accept a Closure, which is read each time it is
+     * needed. The service provider passes one that reads config, so a switch
+     * changed at runtime (per tenant, per request, under Octane) applies here
+     * exactly as it applies in core, which reads the same key on every event.
+     *
+     * @param  bool|Closure(): bool  $captureMedia
+     * @param  bool|Closure(): bool  $captureContent
      */
     public function __construct(
         protected TracerInterface $tracer,
         protected SpanStore $store,
         protected bool $recordExceptions = true,
         protected int $maxContentLength = 65_536,
-        protected bool $captureMedia = false,
-        protected bool $captureContent = false,
+        protected bool|Closure $captureMedia = false,
+        protected bool|Closure $captureContent = false,
     ) {}
+
+    protected function capturesContent(): bool
+    {
+        return $this->captureContent instanceof Closure ? (bool) ($this->captureContent)() : $this->captureContent;
+    }
+
+    protected function capturesMedia(): bool
+    {
+        return $this->captureMedia instanceof Closure ? (bool) ($this->captureMedia)() : $this->captureMedia;
+    }
 
     public function subscribe(Dispatcher $events): void
     {
@@ -343,14 +362,22 @@ class TelemetrySubscriber
      * `exception` event carrying only `exception.type`. The message, the stack
      * trace (whose header lines repeat the message of this exception and of
      * every previous one) and any previous exception stay in the application.
+     *
+     * With capture on they are recorded, and like every other captured value
+     * they are cut to `content_max_length`: the description, the message and
+     * the stack trace separately.
      */
     protected function applyException(SpanInterface $span, Throwable $exception): void
     {
-        if ($this->captureContent) {
-            $span->setStatus(StatusCode::STATUS_ERROR, $exception->getMessage());
+        if ($this->capturesContent()) {
+            $span->setStatus(StatusCode::STATUS_ERROR, $this->bounded($exception->getMessage()));
 
             if ($this->recordExceptions) {
-                $span->recordException($exception);
+                $span->addEvent('exception', [
+                    'exception.type' => $this->exceptionType($exception),
+                    'exception.message' => $this->bounded($exception->getMessage()),
+                    'exception.stacktrace' => $this->bounded($this->stackTrace($exception)),
+                ]);
             }
 
             return;
@@ -375,6 +402,40 @@ class TelemetrySubscriber
         $nul = strpos($class, "\0");
 
         return $nul === false ? $class : substr($class, 0, $nul);
+    }
+
+    /**
+     * A stack trace in the shape the OpenTelemetry SDK writes, built here.
+     *
+     * Built rather than taken from `getTraceAsString()`, which includes each
+     * frame's ARGUMENTS unless `zend.exception_ignore_args` is on, and arguments
+     * are exactly the content this gate exists for. A frame here is its class,
+     * function, file and line. Previous exceptions follow as `Caused by:`,
+     * at most 16 deep and never twice.
+     */
+    protected function stackTrace(Throwable $exception): string
+    {
+        $lines = [];
+        $seen = [];
+
+        for ($current = $exception, $depth = 0; $current instanceof Throwable && $depth < 16; $current = $current->getPrevious(), $depth++) {
+            if (isset($seen[spl_object_id($current)])) {
+                break;
+            }
+            $seen[spl_object_id($current)] = true;
+
+            $lines[] = ($depth === 0 ? '' : 'Caused by: ').$this->exceptionType($current).': '.$current->getMessage();
+
+            foreach ($current->getTrace() as $frame) {
+                $function = (isset($frame['class']) ? $frame['class'].'.' : '').$frame['function'];
+                $location = isset($frame['file']) ? $frame['file'].':'.($frame['line'] ?? 0) : 'Unknown Source';
+                $lines[] = "\tat ".$function.'('.$location.')';
+            }
+
+            $lines[] = "\tat {main}(".$current->getFile().':'.$current->getLine().')';
+        }
+
+        return implode("\n", $lines);
     }
 
     /** The event class is optional until the application installs core 0.146. */
@@ -972,7 +1033,7 @@ class TelemetrySubscriber
     {
         // Every structured content attribute passes through here, so this is
         // the one place media bytes are withheld. See MediaContent.
-        if (! $this->captureMedia) {
+        if (! $this->capturesMedia()) {
             $value = MediaContent::withoutBytes($value);
         }
 

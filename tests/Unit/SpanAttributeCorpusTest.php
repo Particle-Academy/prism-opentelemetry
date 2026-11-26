@@ -316,8 +316,16 @@ it('keeps the exception message off a failed span with capture off, in all three
             expect($exported)->not->toContain($marker)
                 ->and($exported)->not->toContain('carries the content marker')
                 ->and($span['status_description'])->toBe(TelemetrySubscriber::FAILED_DESCRIPTION)
-                ->and($span['events'])->toHaveCount(1)
-                ->and(array_keys($span['events'][0]['attributes']))->toBe(['exception.type']);
+                ->and($span['events'])->toHaveCount(1);
+
+            // What a language's SDK writes beside the type may differ (Python
+            // always writes a message and a stack trace), but only ever empty:
+            // no message, and a stack trace that is the class name alone.
+            $attributes = $span['events'][0]['attributes'];
+            expect($attributes)->toHaveKey('exception.type')
+                ->and(array_diff(array_keys($attributes), ['exception.type', 'exception.message', 'exception.stacktrace', 'exception.escaped']))->toBe([])
+                ->and($attributes['exception.message'] ?? '')->toBe('')
+                ->and($attributes['exception.stacktrace'] ?? 'type line only')->toBe('type line only');
         }
 
         // This language, live, not only as recorded.

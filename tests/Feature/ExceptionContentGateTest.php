@@ -155,3 +155,75 @@ it('defaults to capture OFF when the subscriber is built by hand', function (): 
 
     expect(exportedText($exporter->getSpans()[0]))->not->toContain(EXCEPTION_MARKER);
 });
+
+it('follows a capture switch changed at runtime, as core does', function (): void {
+    // Booted with capture on, then turned off for one request. Core reads the
+    // key on every event, so the bridge must too.
+    config()->set('prism.telemetry.enabled', true);
+    config()->set('prism.telemetry.capture_content', true);
+
+    $exporter = new InMemoryExporter;
+    app()->instance(TracerInterface::class, (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('runtime'));
+    app()->instance(SpanStore::class, new SpanStore);
+    app()->forgetInstance(TelemetrySubscriber::class);
+    app(Dispatcher::class)->subscribe(TelemetrySubscriber::class);
+
+    config()->set('prism.telemetry.capture_content', false);
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
+    Telemetry::failed($context, new RuntimeException(EXCEPTION_MARKER));
+
+    expect(exportedText($exporter->getSpans()[0]))->not->toContain(EXCEPTION_MARKER);
+});
+
+it('cuts a captured message and stack trace to content_max_length', function (): void {
+    $exporter = new InMemoryExporter;
+    $subscriber = new TelemetrySubscriber(
+        (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('bounded'),
+        new SpanStore,
+        maxContentLength: 40,
+        captureContent: true,
+    );
+    config()->set('prism.telemetry.enabled', true);
+    app(Dispatcher::class)->subscribe($subscriber);
+
+    $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
+    Telemetry::failed($context, new RuntimeException(str_repeat('x', 5000)));
+
+    $span = $exporter->getSpans()[0];
+    $attributes = $span->getEvents()[0]->getAttributes()->toArray();
+
+    expect(strlen((string) $span->getStatus()->getDescription()))->toBeLessThan(60)
+        ->and(strlen($attributes['exception.message']))->toBeLessThan(60)
+        ->and(strlen($attributes['exception.stacktrace']))->toBeLessThan(60);
+});
+
+it('writes no frame arguments into a captured stack trace', function (): void {
+    // getTraceAsString() includes arguments unless zend.exception_ignore_args
+    // is on; the bridge builds its own trace so that setting does not matter.
+    $exporter = new InMemoryExporter;
+    $subscriber = new TelemetrySubscriber(
+        (new TracerProvider(new SimpleSpanProcessor($exporter)))->getTracer('frames'),
+        new SpanStore,
+        captureContent: true,
+    );
+    config()->set('prism.telemetry.enabled', true);
+    app(Dispatcher::class)->subscribe($subscriber);
+
+    $thrower = function (string $argument): never {
+        throw new RuntimeException('a failure');
+    };
+
+    try {
+        $thrower('ARGUMENT-'.EXCEPTION_MARKER);
+    } catch (RuntimeException $exception) {
+        $context = Telemetry::start(TelemetryOperation::Text, 'anthropic', 'claude-sonnet-5-5', 'a prompt');
+        Telemetry::failed($context, $exception);
+    }
+
+    $stacktrace = $exporter->getSpans()[0]->getEvents()[0]->getAttributes()->toArray()['exception.stacktrace'];
+
+    expect($stacktrace)->toContain('RuntimeException: a failure')
+        ->and($stacktrace)->toContain('ExceptionContentGateTest.php')
+        ->and($stacktrace)->not->toContain(EXCEPTION_MARKER);
+});
