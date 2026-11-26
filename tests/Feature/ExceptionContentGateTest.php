@@ -16,6 +16,7 @@ use Prism\OpenTelemetry\TelemetrySubscriber;
 use Prism\Prism\Enums\TelemetryOperation;
 use Prism\Prism\Telemetry\Telemetry;
 use RuntimeException;
+use Throwable;
 
 /**
  * An exception message is content.
@@ -271,4 +272,39 @@ it('lists at most sixteen exceptions of a chain in a captured stack trace', func
     expect(substr_count($stacktrace, 'Caused by: '))->toBe(15)
         ->and($stacktrace)->toContain('link 20')
         ->and($stacktrace)->not->toContain('link 4:');
+});
+
+it('stops building a captured stack trace once it passes the limit', function (): void {
+    // The final cut would hide a missing guard, so the build is measured
+    // directly: a deep trace and a long chain, against a small limit.
+    $subscriber = new class((new TracerProvider(new SimpleSpanProcessor(new InMemoryExporter)))->getTracer('raw'), new SpanStore, maxContentLength: 64) extends TelemetrySubscriber
+    {
+        public function rawStackTrace(Throwable $exception): string
+        {
+            return $this->stackTrace($exception);
+        }
+    };
+
+    $deep = function (int $n) use (&$deep): never {
+        if ($n === 0) {
+            throw new RuntimeException('bottom');
+        }
+        $deep($n - 1);
+    };
+
+    try {
+        $deep(200);
+    } catch (RuntimeException $exception) {
+        $chained = new RuntimeException(str_repeat('m', 500), 0, new RuntimeException(str_repeat('p', 500), 0, $exception));
+    }
+
+    foreach ([$exception, $chained] as $thrown) {
+        $raw = $subscriber->rawStackTrace($thrown);
+        $lines = explode("\n", $raw);
+        $longest = max(array_map('strlen', $lines));
+
+        // At most the limit plus the one line that crossed it.
+        expect(strlen($raw))->toBeLessThanOrEqual(64 + $longest + 1)
+            ->and(count($lines))->toBeLessThan(10);
+    }
 });

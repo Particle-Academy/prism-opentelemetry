@@ -79,7 +79,7 @@ php artisan vendor:publish --tag=prism-opentelemetry-config
 | --- | --- | --- | --- |
 | `enabled` | `PRISM_OTEL_ENABLED` | `true` | Subscribe the span-building listener. |
 | `tracer_name` | `PRISM_OTEL_TRACER_NAME` | `prism` | Instrumentation scope name. |
-| `content_max_length` | `PRISM_OTEL_CONTENT_MAX_LENGTH` | `65536` | Cut each captured-content attribute, including a captured exception's message and stack trace, to this many bytes. `0` disables the cap. |
+| `content_max_length` | `PRISM_OTEL_CONTENT_MAX_LENGTH` | `65536` | Cut each captured-content attribute, including a captured exception's message and stack trace, to this many bytes, followed by a `…[truncated]` marker. `0` disables the cap. |
 | `record_exceptions` | `PRISM_OTEL_RECORD_EXCEPTIONS` | `true` | Add an `exception` event to failed spans. With content capture off it carries only `exception.type`. |
 
 ## Privacy

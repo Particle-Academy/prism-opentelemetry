@@ -428,6 +428,9 @@ class TelemetrySubscriber
             $seen[spl_object_id($current)] = true;
 
             $text .= ($text === '' ? '' : "\n").($depth === 0 ? '' : 'Caused by: ').$this->exceptionType($current).': '.$current->getMessage();
+            if ($limit > 0 && strlen($text) > $limit) {
+                break;
+            }
             $text .= "\n\tthrown at ".$current->getFile().':'.$current->getLine();
 
             foreach ($current->getTrace() as $frame) {
